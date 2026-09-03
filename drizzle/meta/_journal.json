@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1788455589380,
+      "tag": "0000_lucky_silver_samurai",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788467594510,
+      "tag": "0001_robust_the_hood",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788469288409,
+      "tag": "0002_tan_agent_zero",
+      "breakpoints": true
+    }
+  ]
+}
