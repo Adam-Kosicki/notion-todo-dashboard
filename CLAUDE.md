@@ -3,6 +3,7 @@
 ## Git commits
 
 This is a **public** GitHub repo (owner: `Adam-Kosicki`). From this point forward:
+https://github.com/Adam-Kosicki/notion-todo-dashboard
 
 - **Split commits by feature**, not one mega-commit per session. When a session touches several distinct features (e.g. "Lists", "Tags", "UI polish"), commit each separately with its own message, even if that means staging the same shared file more than once across commits as it evolves.
 - If splitting cleanly would require fragile manual patch/hunk surgery (interleaved changes across many shared files, no interactive `git add -p` available), it's fine to fall back to fewer/combined commits rather than risk a broken repo state — but say so explicitly instead of silently skipping the split.

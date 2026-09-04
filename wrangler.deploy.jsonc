@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Used by Cloudflare Workers Builds (Git-connected CI/CD) — see the deploy
+  // command in Cloudflare's Build settings, which points wrangler at this file
+  // explicitly via --config. Deliberately NOT named wrangler.jsonc/.toml: the
+  // Cloudflare Vite plugin auto-discovers those by default filename regardless
+  // of the inline `config` option in vite.config.ts, which would merge this
+  // file's real D1 database into local dev's placeholder one (duplicate `DB`
+  // binding). Keeping this file differently named keeps local dev untouched.
+  //
+  // Paths are relative to this file (repo root), pointing at what `npm run build`
+  // (vinext build) produces: the Worker script + assets under dist/.
+  "name": "site-creator-vinext-starter",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "dist/client"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "burner-board-db",
+      "database_id": "1e9b149b-32c7-4d64-9cd5-561c0a70e208"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

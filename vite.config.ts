@@ -18,8 +18,12 @@ const localBindingConfig = {
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          // CF_D1_DATABASE_NAME/CF_D1_DATABASE_ID let a real deploy build bake in
+          // the actual Cloudflare D1 database instead of the local-dev placeholder,
+          // without touching local dev (unset -> placeholder -> Miniflare simulation).
+          database_name: process.env.CF_D1_DATABASE_NAME || "site-creator-d1",
+          database_id:
+            process.env.CF_D1_DATABASE_ID || SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
         },
       ]
     : [],

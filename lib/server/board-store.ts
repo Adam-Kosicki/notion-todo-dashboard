@@ -62,9 +62,14 @@ function notionDataSources() {
 
 export async function requireOwnerId() {
   const requestHeaders = await headers();
-  const id = requestHeaders.get("oai-authenticated-user-id");
-  if (!id) throw new Error("AUTH_REQUIRED");
-  return id;
+  const oaiId = requestHeaders.get("oai-authenticated-user-id");
+  if (oaiId) return oaiId;
+  // Cloudflare Access strips any client-supplied Cf-Access-* header at the edge and
+  // only sets this one itself after a successful login to an Access-protected
+  // hostname, so it's safe to trust directly at the origin without JWT verification.
+  const accessEmail = requestHeaders.get("cf-access-authenticated-user-email");
+  if (accessEmail) return accessEmail.toLowerCase();
+  throw new Error("AUTH_REQUIRED");
 }
 
 function fromBase64(value: string) {
