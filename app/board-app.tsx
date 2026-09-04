@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Archive,
   ArrowUpDown,
@@ -19,6 +19,7 @@ import {
   Gauge,
   GripVertical,
   History,
+  Inbox,
   ListChecks,
   Loader2,
   PackageOpen,
@@ -49,7 +50,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import { LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type RelationOption } from "@/lib/board-types";
 
-type BoardMode = "dashboard" | "prioritize" | "collections" | "reminders" | "completed";
+type BoardMode = "home" | "reminders" | "completed";
 
 const STATUSES = ["Not started", "In progress", "Done", "Archived"];
 const ITEM_TYPES = ["Task", "Goal", "Reminder", "Purchase", "List item", "Someday", "Reference"];
@@ -642,6 +643,12 @@ function CollectionsView({
   onDeleteList: (id: string) => void;
 }) {
   const listsByName = useMemo(() => new Map(lists.map((list) => [list.name, list])), [lists]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (name: string) => setExpanded((current) => {
+    const next = new Set(current);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
   const groups = new Map<string, BoardItem[]>();
   for (const list of lists) groups.set(list.name, []);
   for (const item of items) {
@@ -751,9 +758,10 @@ function CollectionsView({
             </section>
           );
         };
+        const isExpanded = expanded.has(name);
         return (
           <section
-            className="collection-card"
+            className={isExpanded ? "collection-card is-expanded" : "collection-card"}
             key={name}
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
@@ -763,19 +771,24 @@ function CollectionsView({
             }}
           >
             <header className="collection-head">
-              <span className="collection-icon"><Icon /></span>
-              <span><h2>{name}</h2><p>{openCount} open · {group.length} shown</p></span>
+              <button className="collection-head-toggle" onClick={() => toggleExpanded(name)} type="button">
+                <span className="collection-icon"><Icon /></span>
+                <span><h2>{name}</h2><p>{openCount} open · {group.length} shown</p></span>
+                <ChevronRight className={isExpanded ? "collection-chevron open" : "collection-chevron"} />
+              </button>
               {list && <ListManagePopover list={list} itemCount={group.length} onSave={onSaveList} onDelete={onDeleteList} />}
               <span className="drop-note">Drop here</span>
             </header>
-            <div className="collection-subtables">
-              {showPriority ? <>
-                {subtable("Prioritized", prioritized, {}, "priority")}
-                {subtable("No priority", unrated, { priority: null }, "unrated", true)}
-                {showLongTermGoals && subtable("Long-term goals", longGoals, { priority: 0, itemType: "Goal" }, "goals", true)}
-                {subtable(showLongTermGoals ? "Long-term tasks + items" : "Long-term + everything else", longItems, { priority: 0, itemType: "Task" }, "long", true)}
-              </> : subtable("Items", group, {}, "flat", true)}
-            </div>
+            {isExpanded && (
+              <div className="collection-subtables">
+                {showPriority ? <>
+                  {subtable("Prioritized", prioritized, {}, "priority")}
+                  {subtable("No priority", unrated, { priority: null }, "unrated", true)}
+                  {showLongTermGoals && subtable("Long-term goals", longGoals, { priority: 0, itemType: "Goal" }, "goals", true)}
+                  {subtable(showLongTermGoals ? "Long-term tasks + items" : "Long-term + everything else", longItems, { priority: 0, itemType: "Task" }, "long", true)}
+                </> : subtable("Items", group, {}, "flat", true)}
+              </div>
+            )}
           </section>
         );
       })}
@@ -1137,13 +1150,14 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [mode, setMode] = useState<BoardMode>("dashboard");
+  const [mode, setMode] = useState<BoardMode>("home");
   const [search, setSearch] = useState("");
   const [view, setView] = useState("active");
   const [source, setSource] = useState("all");
   const [area, setArea] = useState("all");
   const [capture, setCapture] = useState("");
   const [capturing, setCapturing] = useState(false);
+  const inboxRef = useRef<HTMLDivElement>(null);
 
   const load = async () => {
     try {
@@ -1168,7 +1182,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const completedItems = data?.items.filter((item) => item.status === "Done") || [];
   const stats = {
     active: openItems.length,
-    unrated: openItems.filter(needsPriority).length,
+    inbox: openItems.filter(needsPriority).length,
     today: openItems.filter(isTodayItem).length,
     reminders: openItems.filter((item) => item.itemType === "Reminder").length,
     completed: completedItems.length,
@@ -1373,8 +1387,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <button type="button" onClick={() => void create()} disabled={!capture.trim() || capturing}>{capturing ? <Loader2 className="animate-spin" /> : "Add"}</button>
         </div>
         <div className="stat-strip">
-          <button type="button" onClick={() => { setMode("dashboard"); setView("active"); }}><span>{stats.today}</span>Today</button>
-          <button type="button" className="needs-sort" onClick={() => { setMode("prioritize"); setView("active"); }}><span>{stats.unrated}</span>Prioritize</button>
+          <button type="button" onClick={() => { setMode("home"); setView("active"); window.scrollTo({ top: 0, behavior: "smooth" }); }}><span>{stats.today}</span>Today</button>
+          <button type="button" className="needs-sort" onClick={() => { setMode("home"); setView("active"); inboxRef.current?.scrollIntoView({ behavior: "smooth" }); }}><span>{stats.inbox}</span>Inbox</button>
           <button type="button" className="front-stat" onClick={() => { setMode("reminders"); setView("active"); }}><span>{stats.reminders}</span>Reminders</button>
           <button type="button" className="todoist-stat" onClick={() => { setMode("completed"); setView("all"); }}><span>{stats.completed}</span>Finished</button>
         </div>
@@ -1386,30 +1400,21 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           setView(value === "completed" ? "all" : "active");
         }}>
           <TabsList>
-            <TabsTrigger value="dashboard"><CalendarClock />Plan</TabsTrigger>
-            <TabsTrigger value="prioritize"><Gauge />Prioritize <span className="tab-count">{stats.unrated}</span></TabsTrigger>
-            <TabsTrigger value="collections"><ListChecks />Lists + goals</TabsTrigger>
+            <TabsTrigger value="home"><CalendarClock />Home</TabsTrigger>
             <TabsTrigger value="reminders"><BellRing />Reminders</TabsTrigger>
             <TabsTrigger value="completed"><Trophy />Finished</TabsTrigger>
           </TabsList>
         </Tabs>
-        <p>{mode === "dashboard"
-          ? "Today, this week, then longer. Color shows what needs attention first."
-          : mode === "prioritize"
-            ? "Only uncategorized tasks without a priority appear here."
-            : mode === "collections"
-              ? `${collectionCount} original lists. Drag rows between groups or into a long-term subtable.`
-              : mode === "reminders"
-                ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
-                : "Completed tasks count toward your productivity history. Archived items stay recoverable."}</p>
+        <p>{mode === "home"
+          ? "Inbox, then today, this week, and longer. Your lists are below — expand any of them."
+          : mode === "reminders"
+            ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
+            : "Completed tasks count toward your productivity history. Archived items stay recoverable."}</p>
       </section>
 
       <section className="filterbar">
         <div className="search-box"><Search /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks, lists, notes..." /></div>
-        <Select value={view} onValueChange={(value) => {
-          setView(value);
-          if (value === "unrated") setMode("prioritize");
-        }}>
+        <Select value={view} onValueChange={setView}>
           <SelectTrigger className="filter-select"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="active">Open items</SelectItem>
@@ -1433,86 +1438,87 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         <span className="result-count">{filtered.length} shown</span>
       </section>
 
-      {mode === "dashboard" ? (
-        <section className="dashboard-wrap">
-          <div className="dashboard-grid">
+      {mode === "home" ? (
+        <>
+          <section className="dashboard-wrap prioritize-wrap" ref={inboxRef}>
             <TaskTable
               allTags={allTags}
               collections={data.collections}
-              empty="Nothing due or scheduled today"
-              icon={CalendarClock}
-              items={dashboard.today}
-              note="Today and overdue. Automatically added to Todoist."
-              onDisbandGroup={(id) => void disbandGroup(id)}
-              onDrop={(id) => void saveItem(id, { scheduledFor: localIso(), showInTodoist: true })}
-              onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
+              empty="Nothing new to sort — everything has a priority, list, or connection"
+              icon={Inbox}
+              items={dashboard.triage}
+              note="No priority and no list, area, project, goal, or context — where new captures land until sorted"
+              onDrop={(id) => void saveItem(id, { priority: null })}
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
-              onUnlinkItem={(id) => void unlinkItem(id)}
-              title="Today"
+              title="Inbox"
             />
-            <TaskTable
-              allTags={allTags}
-              collections={data.collections}
-              empty="Nothing scheduled for the rest of this week"
-              icon={Zap}
-              items={dashboard.week}
-              note={`Tomorrow through ${dueLabel(weekEndIso())}`}
-              onDisbandGroup={(id) => void disbandGroup(id)}
-              onDrop={(id) => void saveItem(id, { scheduledFor: weekEndIso() })}
-              onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
+          </section>
+          <section className="dashboard-wrap">
+            <div className="dashboard-grid">
+              <TaskTable
+                allTags={allTags}
+                collections={data.collections}
+                empty="Nothing due or scheduled today"
+                icon={CalendarClock}
+                items={dashboard.today}
+                note="Today and overdue. Automatically added to Todoist."
+                onDisbandGroup={(id) => void disbandGroup(id)}
+                onDrop={(id) => void saveItem(id, { scheduledFor: localIso(), showInTodoist: true })}
+                onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
+                onOpen={(item) => setSelectedId(item.id)}
+                onSave={(id, changes) => void saveItem(id, changes)}
+                onUnlinkItem={(id) => void unlinkItem(id)}
+                title="Today"
+              />
+              <TaskTable
+                allTags={allTags}
+                collections={data.collections}
+                empty="Nothing scheduled for the rest of this week"
+                icon={Zap}
+                items={dashboard.week}
+                note={`Tomorrow through ${dueLabel(weekEndIso())}`}
+                onDisbandGroup={(id) => void disbandGroup(id)}
+                onDrop={(id) => void saveItem(id, { scheduledFor: weekEndIso() })}
+                onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
+                onOpen={(item) => setSelectedId(item.id)}
+                onSave={(id, changes) => void saveItem(id, changes)}
+                onUnlinkItem={(id) => void unlinkItem(id)}
+                title="This week"
+              />
+              <TaskTable
+                allTags={allTags}
+                collections={data.collections}
+                empty="No longer-range prioritized tasks match these filters"
+                icon={History}
+                items={dashboard.longer}
+                note="After this week or no date. Highest attention first."
+                onDisbandGroup={(id) => void disbandGroup(id)}
+                onDrop={(id) => void saveItem(id, { due: null, scheduledFor: null, dateMode: "unspecified" })}
+                onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
+                onOpen={(item) => setSelectedId(item.id)}
+                onSave={(id, changes) => void saveItem(id, changes)}
+                onUnlinkItem={(id) => void unlinkItem(id)}
+                title="Longer"
+              />
+            </div>
+            <div className="heat-legend"><span>Attention color</span><i className="heat-low" />Low<i className="heat-mid" />Medium<i className="heat-high" />High</div>
+          </section>
+          <section className="collections-wrap">
+            <header className="lists-section-head"><ListChecks /><h2>Lists</h2><small>{collectionCount} lists · click one to expand</small></header>
+            <CollectionsView
+              items={filtered}
+              lists={data.lists}
+              onCreateList={(name, type) => void createList(name, type)}
+              onDeleteList={(id) => void deleteList(id)}
               onOpen={(item) => setSelectedId(item.id)}
-              onSave={(id, changes) => void saveItem(id, changes)}
-              onUnlinkItem={(id) => void unlinkItem(id)}
-              title="This week"
+              onPriority={(id, priority) => void saveItem(id, { priority })}
+              onMove={(id, changes) => void saveItem(id, changes)}
+              onSaveList={(id, changes) => void saveList(id, changes)}
+              onStatus={(item) => void saveItem(item.id, { status: ["Done", "Archived"].includes(item.status) ? "Not started" : "Done" })}
             />
-            <TaskTable
-              allTags={allTags}
-              collections={data.collections}
-              empty="No longer-range prioritized tasks match these filters"
-              icon={History}
-              items={dashboard.longer}
-              note="After this week or no date. Highest attention first."
-              onDisbandGroup={(id) => void disbandGroup(id)}
-              onDrop={(id) => void saveItem(id, { due: null, scheduledFor: null, dateMode: "unspecified" })}
-              onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
-              onOpen={(item) => setSelectedId(item.id)}
-              onSave={(id, changes) => void saveItem(id, changes)}
-              onUnlinkItem={(id) => void unlinkItem(id)}
-              title="Longer"
-            />
-          </div>
-          <div className="heat-legend"><span>Attention color</span><i className="heat-low" />Low<i className="heat-mid" />Medium<i className="heat-high" />High</div>
-        </section>
-      ) : mode === "prioritize" ? (
-        <section className="dashboard-wrap prioritize-wrap">
-          <TaskTable
-            allTags={allTags}
-            collections={data.collections}
-            empty="Everything uncategorized has a priority"
-            icon={Gauge}
-            items={dashboard.triage}
-            note="No priority and no list, area, project, goal, or context"
-            onDrop={(id) => void saveItem(id, { priority: null })}
-            onOpen={(item) => setSelectedId(item.id)}
-            onSave={(id, changes) => void saveItem(id, changes)}
-            title="Needs a priority"
-          />
-        </section>
-      ) : mode === "collections" ? (
-        <section className="collections-wrap">
-          <CollectionsView
-            items={filtered}
-            lists={data.lists}
-            onCreateList={(name, type) => void createList(name, type)}
-            onDeleteList={(id) => void deleteList(id)}
-            onOpen={(item) => setSelectedId(item.id)}
-            onPriority={(id, priority) => void saveItem(id, { priority })}
-            onMove={(id, changes) => void saveItem(id, changes)}
-            onSaveList={(id, changes) => void saveList(id, changes)}
-            onStatus={(item) => void saveItem(item.id, { status: ["Done", "Archived"].includes(item.status) ? "Not started" : "Done" })}
-          />
-        </section>
+          </section>
+        </>
       ) : mode === "reminders" ? (
         <section className="dashboard-wrap single-table-wrap">
           <div className="reminder-note"><BellRing /><span><strong>Reminder schedule</strong><small>Dates, times, and repeat rules are saved now. Apple Reminders or Google Calendar can handle notifications when that connection is added.</small></span></div>
@@ -1564,7 +1570,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         </section>
       )}
 
-      <div className="mobile-hint"><ArrowUpDown />{mode === "collections" ? "Tap a row to edit. Use the circle to complete it." : "Hover for quick actions. Tap the title for every field."}</div>
+      <div className="mobile-hint"><ArrowUpDown />Hover for quick actions. Tap the title for every field.</div>
 
       <EditorSheet
         collections={data.collections}

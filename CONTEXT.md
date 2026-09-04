@@ -3,6 +3,12 @@
 ## Item
 A single task/todo/reminder/goal/etc. Stored in the `items` table. Has a `priority` (0–10 importance, null = unrated), an `attentionScore`/`effectiveAttention` (computed urgency blending priority and due date), an `itemType` (Task/Goal/Reminder/Purchase/List item/Someday/Reference), and a `collection` (which List it belongs to, if any).
 
+## Inbox
+The set of Items with no priority and no List, Area, Project, Goal, or Context — every quick capture lands here by default, since a fresh capture sets none of those. Not a stored flag: an Item leaves Inbox automatically the moment any one of those fields is set, no separate "processed" state. Renamed from "Prioritize"; same underlying filter, `needsPriority()`. Shown as the top section of the **Home** page.
+
+## Home
+The merged landing page: Inbox, then Today, This week, and Longer, then every List as a collapsed card. Replaces the old separate "Plan" and "Lists + goals" destinations — there is no other place to see either.
+
 ## List
 A named grouping of Items, shown as a column in "Lists + goals" and used as the `collection` value on an Item. A real table (`lists`), carrying its own **List Type** and field-visibility flags, separate from the item rows that reference it by name.
 

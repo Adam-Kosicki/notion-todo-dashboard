@@ -13,23 +13,27 @@ Burner Board is a fast editing layer for a Notion task database. It should take 
 
 ## Main planning flow
 
-The Plan view has three tables in this order:
+Plan and Lists+goals are merged into one **Home** page, top to bottom:
 
-1. Today. Includes overdue items, items due or scheduled today, and the legacy Today list.
-2. This week. Includes the remaining days through Sunday.
-3. Longer. Includes priority-bearing work outside Today and This week, including work without a date.
+1. **Inbox** (renamed from "Prioritize"). Tasks with no priority and no collection, area, project, goal, or context — the landing zone every quick capture falls into until it's given at least one of those. Leaving Inbox happens automatically the moment any of those fields is set; there's no separate "processed" flag.
+2. **Today.** Overdue items, items due or scheduled today, and the legacy Today list.
+3. **This week.** The remaining days through Sunday.
+4. **Longer.** Priority-bearing work outside Today and This week, including work without a date.
+5. **Lists.** Every list as a compact, collapsed-by-default card (name, open/shown counts, manage gear) — click one to expand and see its items. Nothing else on the page depends on a list being expanded; it's purely a display state.
 
-Each table sorts by combined urgency, then stored attention, numeric priority, date, and name. A due date that is close or overdue raises effective attention. The row border, task name, and the row's whole background (a subtle gradient wash, not just the marker dot) move from green to yellow to red as urgency rises.
+Today/This week/Longer each sort by combined urgency, then stored attention, numeric priority, date, and name. A due date that is close or overdue raises effective attention. The row border, task name, and the row's whole background (a subtle gradient wash, not just the marker dot) move from green to yellow to red as urgency rises.
 
-Dragging an item into Today schedules it for today. Dragging it into This week schedules it for Sunday. Dragging it into Longer clears its active due and scheduled dates.
+Dragging an item into Today schedules it for today. Dragging it into This week schedules it for Sunday. Dragging it into Longer clears its active due and scheduled dates. Since Inbox, Today/Week/Longer, and Lists are all on the same page now, dragging an Inbox item straight into a List card (or vice versa) works directly, no navigating between views first.
+
+The nav is just Home / Reminders / Finished — there's no separate "Prioritize" or "Lists + goals" destination anymore, both live inside Home.
 
 ## Priority and non-task objects
 
 - Actionable tasks use a 0 to 10 priority slider.
 - Priority 0 is reserved for non-action or long-term objects.
 - Goals, reminders, purchases, list items, someday items, and references do not show the priority slider.
-- Whether a list shows the priority queue (Prioritized / No priority / Long-term goals) or a flat Items list is now driven by that **List's Type** (see below), not a hardcoded list name. Grocery, Wish List, Bucket List, Monthly Payments, and Warranties get this behavior today because they were inferred into non-priority types on first load — any list can be reconfigured from its own manage popover.
-- Prioritize shows only tasks with no priority and no collection, area, project, goal, or context.
+- Whether a list shows the priority queue (Prioritized / No priority / Long-term goals) or a flat Items list is driven by that **List's Type** (see below), not a hardcoded list name. Grocery, Wish List, Bucket List, Monthly Payments, and Warranties get this behavior today because they were inferred into non-priority types on first load — any list can be reconfigured from its own manage popover.
+- Inbox shows only tasks with no priority and no collection, area, project, goal, or context.
 
 ## Lists
 

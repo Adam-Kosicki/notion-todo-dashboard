@@ -1179,6 +1179,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
   margin: 0 auto;
   padding: 0 clamp(16px, 3vw, 36px) 24px;
 }
+.lists-section-head {
+  display: flex;
+  align-items: center;
+  margin: 6px 0 12px;
+  color: #aab4be;
+  gap: 8px;
+}
+.lists-section-head svg { width: 16px; color: #73b5ff; }
+.lists-section-head h2 { margin: 0; color: #f1efeb; font-size: 15px; font-weight: 800; }
+.lists-section-head small { color: #6e7b89; font-size: 11px; }
 .collections-grid {
   display: grid;
   align-items: start;
@@ -1200,9 +1210,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
   align-items: center;
   padding: 11px 13px;
   border-bottom: 1px solid #26313e;
-  grid-template-columns: 36px minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
 }
+.collection-head-toggle {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  grid-template-columns: 36px minmax(0, 1fr) 16px;
+  gap: 10px;
+  text-align: left;
+}
+.collection-chevron { width: 16px; color: #6e7b89; transition: transform 120ms ease; }
+.collection-chevron.open { transform: rotate(90deg); }
 .list-manage-trigger {
   display: grid;
   width: 30px;
