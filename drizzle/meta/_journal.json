@@ -43,6 +43,13 @@
       "when": 1788543516484,
       "tag": "0005_awesome_infant_terrible",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788546533546,
+      "tag": "0006_last_madame_hydra",
+      "breakpoints": true
     }
   ]
 }

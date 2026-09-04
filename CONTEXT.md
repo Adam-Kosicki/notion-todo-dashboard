@@ -13,6 +13,8 @@ The merged landing page: Inbox, then Today, This week, and Longer, then every Li
 A named grouping of Items, shown as a column in "Lists + goals" and used as the `collection` value on an Item. A real table (`lists`), carrying its own **List Type** and field-visibility flags, separate from the item rows that reference it by name.
 
 - Deleting a List does not delete its Items — they fall back to no list (`collection = null`). No "archive" state for Lists; only delete. (Archiving already exists at the *Item* level via `status = "Archived"`, unrelated to List archiving — see **Item Archive**.)
+- A List's `sortOrder` (integer) drives its display position; drag one list's card onto another's to reorder — the dropped list takes the target's position, everything else shifts. Seeded once from the legacy display order so switching to sortOrder-driven display didn't reshuffle anyone's existing list order.
+- A List's `defaultItemType` (nullable) is a soft pre-fill: assigning an Item to this list sets that Item's `itemType` to the default *unless* the same save already explicitly sets `itemType`. Never retroactive — Items already in the list are untouched when the default changes.
 
 ## List Type
 A per-List classification that drives *default* field visibility for that list (e.g. whether the "Long-term goals" and "Prioritized/No-priority" subtables make sense to show). Replaces the old hardcoded special-case (`name !== "Grocery"`) that excluded only one specific list by name.

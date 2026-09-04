@@ -44,7 +44,9 @@ Lists are a real, per-owner entity (`lists` table), not just derived strings. Ea
 - Optional **per-list overrides** of those two visibility flags (Default / On / Off), so an individual list can diverge from its type's default.
 - A **reminder default** (only surfaced for Recurring payments lists).
 
-Manage a list — rename, change type, toggle visibility, or delete — from the gear icon on its card header in "Lists + goals". Deleting a list is permanent (no archive state for lists); any items still in it fall back to no list rather than being deleted. List-level fields (type, visibility overrides, reminder default) are local-only and do not round-trip to Notion, since they have no corresponding Notion property — only each item's own `collection` string does.
+Manage a list — rename, change type, toggle visibility, set a default item type, or delete — from the gear icon on its card header. Reorder lists by dragging a card's header onto another (drop position becomes the new position, same as a normal list reorder). List-level fields (type, visibility overrides, reminder default, default item type, sort order) are local-only and do not round-trip to Notion, since they have no corresponding Notion property — only each item's own `collection` string does. Deleting a list is permanent (no archive state for lists); any items still in it fall back to no list rather than being deleted.
+
+**Default item type** is a soft pre-fill, not a rule: when an item is newly assigned to a list with one set, its `itemType` is set to that default — but only if the same save doesn't already explicitly set `itemType` (an explicit choice always wins), and existing items already in the list are never retroactively rewritten.
 
 ## Tags
 

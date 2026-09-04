@@ -60,6 +60,7 @@ export const lists = sqliteTable(
     showPriority: integer("show_priority", { mode: "boolean" }),
     showLongTermGoals: integer("show_long_term_goals", { mode: "boolean" }),
     reminderDefault: text("reminder_default"),
+    defaultItemType: text("default_item_type"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

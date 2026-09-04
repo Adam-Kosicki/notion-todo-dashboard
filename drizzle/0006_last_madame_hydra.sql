@@ -1,0 +1,1 @@
+ALTER TABLE `lists` ADD `default_item_type` text;

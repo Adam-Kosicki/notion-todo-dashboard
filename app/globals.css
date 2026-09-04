@@ -1212,7 +1212,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
   border-bottom: 1px solid #26313e;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
+  cursor: grab;
 }
+.collection-card[draggable="true"]:active { cursor: grabbing; }
 .collection-head-toggle {
   display: grid;
   min-width: 0;

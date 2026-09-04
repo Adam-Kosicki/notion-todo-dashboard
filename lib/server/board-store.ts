@@ -302,6 +302,7 @@ function rowToList(row: any): BoardList {
     showPriority: row.show_priority === null || row.show_priority === undefined ? null : Boolean(row.show_priority),
     showLongTermGoals: row.show_long_term_goals === null || row.show_long_term_goals === undefined ? null : Boolean(row.show_long_term_goals),
     reminderDefault: row.reminder_default,
+    defaultItemType: row.default_item_type,
     sortOrder: Number(row.sort_order || 0),
   };
 }
@@ -348,6 +349,54 @@ export async function ensureListsBackfill(ownerId: string) {
   await db.prepare("INSERT OR REPLACE INTO app_meta (owner_id, key, value) VALUES (?, ?, ?)")
     .bind(ownerId, "lists_v1", "backfilled")
     .run();
+}
+
+// Mirrors board-app.tsx's COLLECTION_ORDER — used once to seed sort_order so switching
+// display to sort_order-driven (to support drag-to-reorder) doesn't visibly reshuffle
+// anyone's existing list order on first load.
+const LEGACY_COLLECTION_ORDER = [
+  "Important todo", "Today", "Grocery", "Wish List", "Health", "Career", "Projects",
+  "Goals", "Bucket List", "Later", "Bills", "Warranties", "Unsorted",
+];
+
+export async function ensureListsSortOrder(ownerId: string) {
+  const db = runtime().DB;
+  const marker = await db
+    .prepare("SELECT value FROM app_meta WHERE owner_id = ? AND key = ?")
+    .bind(ownerId, "lists_sort_v1")
+    .first();
+  if (marker) return;
+
+  const existing = await db.prepare("SELECT id, name FROM lists WHERE owner_id = ?").bind(ownerId).all();
+  const rows = (existing.results || []) as Array<{ id: string; name: string }>;
+  const ordered = [...rows].sort((a, b) => {
+    const left = LEGACY_COLLECTION_ORDER.indexOf(a.name);
+    const right = LEGACY_COLLECTION_ORDER.indexOf(b.name);
+    if (left !== -1 || right !== -1) {
+      if (left === -1) return 1;
+      if (right === -1) return -1;
+      return left - right;
+    }
+    return a.name.localeCompare(b.name);
+  });
+  const statements = ordered.map((row, index) =>
+    db.prepare("UPDATE lists SET sort_order = ? WHERE owner_id = ? AND id = ?").bind(index, ownerId, row.id),
+  );
+  for (let index = 0; index < statements.length; index += 40) {
+    await db.batch(statements.slice(index, index + 40));
+  }
+  await db.prepare("INSERT OR REPLACE INTO app_meta (owner_id, key, value) VALUES (?, ?, ?)")
+    .bind(ownerId, "lists_sort_v1", "seeded")
+    .run();
+}
+
+export async function reorderLists(ownerId: string, orderedIds: string[]) {
+  const db = runtime().DB;
+  const statements = orderedIds.map((id, index) =>
+    db.prepare("UPDATE lists SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?").bind(index, ownerId, id),
+  );
+  await db.batch(statements);
+  return { lists: await listLists(ownerId) };
 }
 
 export async function listLists(ownerId: string): Promise<BoardList[]> {
@@ -402,6 +451,7 @@ export async function updateList(ownerId: string, id: string, changes: EditableL
   if ("showPriority" in changes) { sets.push("show_priority = ?"); values.push(changes.showPriority === null || changes.showPriority === undefined ? null : changes.showPriority ? 1 : 0); }
   if ("showLongTermGoals" in changes) { sets.push("show_long_term_goals = ?"); values.push(changes.showLongTermGoals === null || changes.showLongTermGoals === undefined ? null : changes.showLongTermGoals ? 1 : 0); }
   if ("reminderDefault" in changes) { sets.push("reminder_default = ?"); values.push(nullable(changes.reminderDefault)); }
+  if ("defaultItemType" in changes) { sets.push("default_item_type = ?"); values.push(nullable(changes.defaultItemType)); }
 
   if (sets.length) {
     sets.push("updated_at = CURRENT_TIMESTAMP");
@@ -449,6 +499,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
   await ensureSeed(ownerId);
   await ensureOrganization(ownerId);
   await ensureListsBackfill(ownerId);
+  await ensureListsSortOrder(ownerId);
   const db = runtime().DB;
   const result = await db.prepare(
     "SELECT * FROM items WHERE owner_id = ? ORDER BY CASE status WHEN 'In progress' THEN 0 WHEN 'Not started' THEN 1 ELSE 2 END, COALESCE(priority, -1) DESC, attention_score DESC, title COLLATE NOCASE",
@@ -790,6 +841,16 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
   if (normalizedChanges.status === "Done" && before.status !== "Done") normalizedChanges.completedAt = now;
   if ("status" in normalizedChanges && normalizedChanges.status !== "Done" && before.completedAt) normalizedChanges.completedAt = null;
   if (normalizedChanges.status === "Archived") normalizedChanges.showInTodoist = false;
+
+  // A list's default item type is a soft pre-fill: it only applies when an item is being
+  // newly assigned to that list (collection changing) and nothing already set itemType in
+  // this same request — an explicit itemType change always wins. Existing items elsewhere
+  // are never retroactively rewritten (see docs/adr — decision confirmed with the user).
+  if (normalizedChanges.collection && !("itemType" in normalizedChanges)) {
+    const listRow = await runtime().DB.prepare("SELECT default_item_type FROM lists WHERE owner_id = ? AND name = ?")
+      .bind(ownerId, normalizedChanges.collection).first() as { default_item_type: string | null } | null;
+    if (listRow?.default_item_type) normalizedChanges.itemType = listRow.default_item_type;
+  }
 
   const nonPriorityTypes = ["Goal", "Reminder", "Purchase", "List item", "Someday", "Reference"];
   if (normalizedChanges.itemType && nonPriorityTypes.includes(normalizedChanges.itemType) && !("priority" in normalizedChanges)) {

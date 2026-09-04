@@ -7,6 +7,7 @@ import {
   disconnectProvider,
   getBoard,
   mergeItems,
+  reorderLists,
   requireOwnerId,
   syncNotion,
   unlinkFromGroup,
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
       provider?: "notion" | "todoist";
       token?: string;
       targetId?: string;
+      orderedIds?: string[];
     };
 
     if (body.action === "create") {
@@ -65,6 +67,9 @@ export async function POST(request: Request) {
     }
     if (body.action === "list_delete" && body.id) {
       return Response.json(await deleteList(ownerId, body.id));
+    }
+    if (body.action === "list_reorder" && body.orderedIds) {
+      return Response.json(await reorderLists(ownerId, body.orderedIds));
     }
     if (body.action === "merge_items" && body.id && body.targetId) {
       return Response.json(await mergeItems(ownerId, body.id, body.targetId));

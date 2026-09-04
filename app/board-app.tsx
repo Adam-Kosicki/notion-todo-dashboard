@@ -48,12 +48,11 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
-import { LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type RelationOption } from "@/lib/board-types";
+import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type RelationOption } from "@/lib/board-types";
 
 type BoardMode = "home" | "reminders" | "completed";
 
 const STATUSES = ["Not started", "In progress", "Done", "Archived"];
-const ITEM_TYPES = ["Task", "Goal", "Reminder", "Purchase", "List item", "Someday", "Reference"];
 const ENERGIES = ["High focus", "Medium", "Low / admin"];
 const CONTEXTS = ["Computer", "Phone", "Errands", "Home", "Anywhere"];
 const RECURRENCES = ["Daily", "Weekdays", "Weekly", "Monthly", "Yearly", "Custom"];
@@ -579,6 +578,13 @@ function ListManagePopover({ list, itemCount, onSave, onDelete }: {
             <input key={`${list.id}:reminder`} defaultValue={list.reminderDefault || ""} placeholder="e.g. Monthly on the 1st" onBlur={(event) => { const value = event.currentTarget.value.trim(); if (value !== (list.reminderDefault || "")) onSave(list.id, { reminderDefault: value || null }); }} />
           </label>
         )}
+        <label className="quick-field">
+          <span>New items in this list default to</span>
+          <select value={list.defaultItemType || ""} onChange={(event) => onSave(list.id, { defaultItemType: event.currentTarget.value || null })}>
+            <option value="">No default (leave as-is)</option>
+            {ITEM_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+        </label>
         {confirmDelete ? (
           <div className="list-delete-confirm">
             <p>{itemCount ? `${itemCount} task${itemCount === 1 ? "" : "s"} will move to no list.` : "This list is empty."}</p>
@@ -621,6 +627,8 @@ function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => v
   );
 }
 
+const LIST_DRAG_TYPE = "application/x-burner-list-id";
+
 function CollectionsView({
   items,
   lists,
@@ -631,6 +639,7 @@ function CollectionsView({
   onCreateList,
   onSaveList,
   onDeleteList,
+  onReorderLists,
 }: {
   items: BoardItem[];
   lists: BoardList[];
@@ -641,6 +650,7 @@ function CollectionsView({
   onCreateList: (name: string, type: string) => void;
   onSaveList: (id: string, changes: EditableList) => void;
   onDeleteList: (id: string) => void;
+  onReorderLists: (orderedIds: string[]) => void;
 }) {
   const listsByName = useMemo(() => new Map(lists.map((list) => [list.name, list])), [lists]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -659,6 +669,11 @@ function CollectionsView({
     groups.set(name, group);
   }
   const order = [...groups.keys()].sort((a, b) => {
+    const listA = listsByName.get(a);
+    const listB = listsByName.get(b);
+    if (listA && listB) return listA.sortOrder - listB.sortOrder;
+    if (listA) return -1;
+    if (listB) return 1;
     const left = COLLECTION_ORDER.indexOf(a);
     const right = COLLECTION_ORDER.indexOf(b);
     if (left !== -1 || right !== -1) {
@@ -668,6 +683,21 @@ function CollectionsView({
     }
     return a.localeCompare(b);
   });
+  const reorderListDrop = (event: { dataTransfer: DataTransfer }, targetName: string) => {
+    const draggedId = event.dataTransfer.getData(LIST_DRAG_TYPE);
+    if (!draggedId) return false;
+    const targetList = listsByName.get(targetName);
+    if (!targetList || draggedId === targetList.id) return true;
+    const realLists = order.map((name) => listsByName.get(name)).filter((entry): entry is BoardList => Boolean(entry));
+    const fromIndex = realLists.findIndex((entry) => entry.id === draggedId);
+    const toIndex = realLists.findIndex((entry) => entry.id === targetList.id);
+    if (fromIndex === -1 || toIndex === -1) return true;
+    const reordered = [...realLists];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+    onReorderLists(reordered.map((entry) => entry.id));
+    return true;
+  };
 
   return (
     <div className="collections-grid">
@@ -762,10 +792,20 @@ function CollectionsView({
         return (
           <section
             className={isExpanded ? "collection-card is-expanded" : "collection-card"}
+            draggable={Boolean(list)}
             key={name}
             onDragOver={(event) => event.preventDefault()}
+            onDragStart={(event) => {
+              if (!list || (event.target as HTMLElement).closest("button, input, select, .priority-control, .collection-row")) {
+                event.preventDefault();
+                return;
+              }
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(LIST_DRAG_TYPE, list.id);
+            }}
             onDrop={(event) => {
               event.preventDefault();
+              if (reorderListDrop(event, name)) return;
               const id = event.dataTransfer.getData("text/plain");
               if (id) onMove(id, showPriority ? { collection: name } : { collection: name, priority: 0 });
             }}
@@ -1289,6 +1329,27 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     }
   };
 
+  const reorderLists = async (orderedIds: string[]) => {
+    if (!data) return;
+    const previousLists = data.lists;
+    // Optimistic: renumber locally by the same index scheme the server will assign,
+    // so the drag-drop feels instant instead of waiting on a round trip.
+    setData((current) => current ? {
+      ...current,
+      lists: current.lists.map((list) => {
+        const index = orderedIds.indexOf(list.id);
+        return index === -1 ? list : { ...list, sortOrder: index };
+      }),
+    } : current);
+    try {
+      const result = await boardRequest({ action: "list_reorder", orderedIds });
+      setData((current) => current ? { ...current, lists: result.lists } : current);
+    } catch (reorderError) {
+      setData((current) => current ? { ...current, lists: previousLists } : current);
+      toast.error(reorderError instanceof Error ? reorderError.message : "Could not reorder lists.");
+    }
+  };
+
   const deleteList = async (id: string) => {
     if (!data) return;
     const list = data.lists.find((entry) => entry.id === id);
@@ -1511,6 +1572,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               lists={data.lists}
               onCreateList={(name, type) => void createList(name, type)}
               onDeleteList={(id) => void deleteList(id)}
+              onReorderLists={(orderedIds) => void reorderLists(orderedIds)}
               onOpen={(item) => setSelectedId(item.id)}
               onPriority={(id, priority) => void saveItem(id, { priority })}
               onMove={(id, changes) => void saveItem(id, changes)}
