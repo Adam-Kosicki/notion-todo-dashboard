@@ -27,6 +27,7 @@ const COLUMN_MAP: Record<string, string> = {
   goal: "goal",
   originalNotes: "original_notes",
   tags: "tags",
+  groupId: "group_id",
   lastInteraction: "last_interaction",
   completedAt: "completed_at",
   starred: "starred",
@@ -279,6 +280,7 @@ function rowToItem(row: any): BoardItem {
     goal: row.goal,
     originalNotes: row.original_notes,
     tags: row.tags,
+    groupId: row.group_id,
     lastInteraction: row.last_interaction,
     lastNudge: row.last_nudge,
     completedAt: row.completed_at,
@@ -713,6 +715,70 @@ async function findItem(ownerId: string, id: string) {
   const row = await runtime().DB.prepare("SELECT * FROM items WHERE owner_id = ? AND id = ?").bind(ownerId, id).first();
   if (!row) throw new Error("Item not found.");
   return rowToItem(row);
+}
+
+// Groups have no anchor entity of their own: the first item merged becomes the "anchor" by
+// pointing group_id at its own id, and every other member's group_id points at that same id.
+// This keeps grouping local-only (no new table, no Notion property) — see docs/adr/0002.
+export async function mergeItems(ownerId: string, draggedId: string, targetId: string) {
+  if (draggedId === targetId) throw new Error("Can't merge an item with itself.");
+  const db = runtime().DB;
+  const dragged = await findItem(ownerId, draggedId);
+  const target = await findItem(ownerId, targetId);
+  const targetAnchor = target.groupId || target.id;
+  const sourceAnchor = dragged.groupId || dragged.id;
+  if (sourceAnchor === targetAnchor) {
+    const result = await db.prepare("SELECT * FROM items WHERE owner_id = ? AND group_id = ?").bind(ownerId, targetAnchor).all();
+    return { items: (result.results || []).map(rowToItem) };
+  }
+
+  const now = new Date().toISOString();
+  const members = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND (group_id = ? OR id = ?)")
+    .bind(ownerId, sourceAnchor, draggedId).all();
+  const memberIds = [...new Set((members.results || []).map((row: any) => row.id as string))];
+  const statements = memberIds.map((memberId) =>
+    db.prepare("UPDATE items SET group_id = ?, dirty = 1, last_interaction = ?, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?")
+      .bind(targetAnchor, now, ownerId, memberId),
+  );
+  if (!target.groupId) {
+    statements.push(
+      db.prepare("UPDATE items SET group_id = ?, dirty = 1, last_interaction = ?, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?")
+        .bind(targetAnchor, now, ownerId, targetId),
+    );
+  }
+  await db.batch(statements);
+  const result = await db.prepare("SELECT * FROM items WHERE owner_id = ? AND group_id = ?").bind(ownerId, targetAnchor).all();
+  return { items: (result.results || []).map(rowToItem) };
+}
+
+export async function unlinkFromGroup(ownerId: string, id: string) {
+  const db = runtime().DB;
+  const item = await findItem(ownerId, id);
+  if (!item.groupId) return { items: [item] };
+  const anchorId = item.groupId;
+  await db.prepare("UPDATE items SET group_id = NULL, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?")
+    .bind(ownerId, id).run();
+  // If dissolving this membership leaves only the anchor itself pointing at anchorId, the
+  // "group" is now a single item — clear its self-reference too so it reads as solo again.
+  // Both affected items are returned so the client can update either without a full refetch.
+  const remaining = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND group_id = ?").bind(ownerId, anchorId).all();
+  const remainingIds = (remaining.results || []).map((row: any) => row.id as string);
+  if (remainingIds.length === 1 && remainingIds[0] === anchorId) {
+    await db.prepare("UPDATE items SET group_id = NULL, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?")
+      .bind(ownerId, anchorId).run();
+    return { items: [await findItem(ownerId, id), await findItem(ownerId, anchorId)] };
+  }
+  return { items: [await findItem(ownerId, id)] };
+}
+
+export async function disbandGroup(ownerId: string, anchorId: string) {
+  const db = runtime().DB;
+  const members = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND group_id = ?").bind(ownerId, anchorId).all();
+  const memberIds = [...new Set([anchorId, ...((members.results || []).map((row: any) => row.id as string))])];
+  await db.prepare("UPDATE items SET group_id = NULL, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND (group_id = ? OR id = ?)")
+    .bind(ownerId, anchorId, anchorId).run();
+  const items = await Promise.all(memberIds.map((id) => findItem(ownerId, id)));
+  return { items };
 }
 
 export async function updateItem(ownerId: string, id: string, changes: EditableChanges) {

@@ -31,6 +31,7 @@ import {
   Target,
   Trash2,
   Trophy,
+  Ungroup,
   Unplug,
   WalletCards,
   X,
@@ -191,6 +192,40 @@ function tagColor(name: string) {
 
 function tagList(value: string | null) {
   return (value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+
+type GroupedItem = BoardItem & { groupMembers?: BoardItem[] };
+
+// Groups collapse into one synthetic row for display: the anchor member's fields (title,
+// itemType, collection, priority) represent the group, with due set to the earliest member
+// date and attentionScore pre-baked to the max of members' effective attention — so every
+// existing urgency/date function (effectiveAttention, isTodayItem, ...) keeps working
+// unmodified on the collapsed row. Members ride along in groupMembers for the expanded view.
+function collapseGroups(items: BoardItem[]): GroupedItem[] {
+  const byAnchor = new Map<string, BoardItem[]>();
+  const solo: GroupedItem[] = [];
+  for (const item of items) {
+    if (item.groupId) {
+      const members = byAnchor.get(item.groupId) || [];
+      members.push(item);
+      byAnchor.set(item.groupId, members);
+    } else {
+      solo.push(item);
+    }
+  }
+  const collapsed = [...solo];
+  for (const [anchorId, members] of byAnchor) {
+    const anchor = members.find((member) => member.id === anchorId) || members[0];
+    const dates = members.map((member) => inputDate(member.due) || inputDate(member.scheduledFor)).filter(Boolean).sort();
+    collapsed.push({
+      ...anchor,
+      due: dates[0] || null,
+      scheduledFor: null,
+      attentionScore: Math.max(...members.map((member) => effectiveAttention(member))),
+      groupMembers: members,
+    });
+  }
+  return collapsed;
 }
 
 function attentionSort(a: BoardItem, b: BoardItem) {
@@ -370,20 +405,28 @@ function QuickEditor({ item, collections, allTags, onSave }: {
   );
 }
 
-function TaskRow({ item, collections, allTags, completed = false, onOpen, onSave }: {
-  item: BoardItem;
+function TaskRow({ item, collections, allTags, completed = false, groupMemberOf, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup }: {
+  item: GroupedItem;
   collections: string[];
   allTags: string[];
   completed?: boolean;
+  groupMemberOf?: string;
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
+  onMergeInto?: (draggedId: string, targetId: string) => void;
+  onUnlinkItem?: (id: string) => void;
+  onDisbandGroup?: (anchorId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const done = ["Done", "Archived"].includes(item.status);
   const date = completed ? dueLabel(item.completedAt) : dueLabel(item.due || item.scheduledFor);
   const attention = Math.round(effectiveAttention(item));
+  const members = item.groupMembers;
+  const isGroup = Boolean(members && members.length > 1);
   return (
     <article
-      className={`${done ? "dashboard-row is-done" : "dashboard-row"} ${item.dirty ? "is-dirty" : ""}`}
+      className={`${done ? "dashboard-row is-done" : "dashboard-row"} ${item.dirty ? "is-dirty" : ""} ${dragOver ? "merge-target" : ""}`}
       draggable
       onDragStart={(event) => {
         if ((event.target as HTMLElement).closest("button, input, select, .priority-control")) {
@@ -393,13 +436,24 @@ function TaskRow({ item, collections, allTags, completed = false, onOpen, onSave
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", item.id);
       }}
+      onDragOver={(event) => { if (onMergeInto) { event.preventDefault(); event.stopPropagation(); } }}
+      onDragEnter={(event) => { if (onMergeInto) { event.stopPropagation(); setDragOver(true); } }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        if (!onMergeInto) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setDragOver(false);
+        const draggedId = event.dataTransfer.getData("text/plain");
+        if (draggedId && draggedId !== item.id) onMergeInto(draggedId, item.id);
+      }}
       style={{ "--heat-color": heatColor(item) } as CSSProperties}
     >
       <div className="dashboard-row-main">
         <button aria-label={done ? `Reopen ${item.title}` : `Complete ${item.title}`} className="check-button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })} type="button">{done ? <CheckCircle2 /> : <span />}</button>
         <GripVertical className="dashboard-drag" aria-hidden="true" />
-        <button className="dashboard-title" onClick={() => onOpen(item)} type="button">
-          <strong>{item.title}</strong>
+        <button className="dashboard-title" onClick={() => isGroup ? setExpanded((open) => !open) : onOpen(item)} type="button">
+          <strong>{item.title}{isGroup && <em className="group-badge"><ChevronRight className={expanded ? "group-chevron open" : "group-chevron"} />{members!.length} tasks</em>}</strong>
           <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}{item.showInTodoist && <em className="todoist-mark">T</em>}
             {tagList(item.tags).map((tag) => <em key={tag} className="tag-pill" style={{ "--tag-color": tagColor(tag) } as CSSProperties}>{tag}</em>)}
           </span>
@@ -416,17 +470,39 @@ function TaskRow({ item, collections, allTags, completed = false, onOpen, onSave
         <button type="button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })}><CheckCircle2 />{done ? "Reopen" : "Done"}</button>
         <button type="button" onClick={() => onSave(item.id, { lastInteraction: new Date().toISOString() })}><Sparkles />Active</button>
         <DateQuickPopover item={item} onSave={onSave} />
+        {groupMemberOf && onUnlinkItem ? (
+          <button type="button" onClick={() => onUnlinkItem(item.id)}><Ungroup />Unlink</button>
+        ) : isGroup && onDisbandGroup ? (
+          <button type="button" onClick={() => onDisbandGroup(item.id)}><Ungroup />Disband</button>
+        ) : null}
         <button type="button" className="archive-action" onClick={() => onSave(item.id, { status: "Archived" })}><Archive />Archive</button>
       </div>
-      <QuickEditor item={item} collections={collections} allTags={allTags} onSave={onSave} />
+      {!isGroup && <QuickEditor item={item} collections={collections} allTags={allTags} onSave={onSave} />}
+      {isGroup && expanded && (
+        <div className="group-members">
+          {members!.map((member) => (
+            <TaskRow
+              allTags={allTags}
+              collections={collections}
+              completed={completed}
+              groupMemberOf={item.id}
+              item={member}
+              key={member.id}
+              onOpen={onOpen}
+              onSave={onSave}
+              onUnlinkItem={onUnlinkItem}
+            />
+          ))}
+        </div>
+      )}
     </article>
   );
 }
 
-function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags, completed = false, onOpen, onSave, onDrop }: {
+function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup }: {
   title: string;
   note: string;
-  items: BoardItem[];
+  items: GroupedItem[];
   icon: typeof Flame;
   empty: string;
   collections: string[];
@@ -435,13 +511,16 @@ function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
   onDrop?: (id: string) => void;
+  onMergeInto?: (draggedId: string, targetId: string) => void;
+  onUnlinkItem?: (id: string) => void;
+  onDisbandGroup?: (anchorId: string) => void;
 }) {
   return (
     <section className="task-table-panel" onDragOver={(event) => { if (onDrop) event.preventDefault(); }} onDrop={(event) => { if (!onDrop) return; event.preventDefault(); const id = event.dataTransfer.getData("text/plain"); if (id) onDrop(id); }}>
       <header className="task-table-head"><span className="task-table-icon"><Icon /></span><span><h2>{title}</h2><p>{note}</p></span><span className="task-table-count">{items.length}</span></header>
       <div className="task-table-columns" aria-hidden="true"><span>Task</span><span>{completed ? "Finished" : "Due"}</span><span>Attention</span><span>Priority</span><span /></div>
       <div className="task-table-body">
-        {items.map((item) => <TaskRow allTags={allTags} completed={completed} item={item} collections={collections} key={item.id} onOpen={onOpen} onSave={onSave} />)}
+        {items.map((item) => <TaskRow allTags={allTags} completed={completed} item={item} collections={collections} key={item.id} onDisbandGroup={onDisbandGroup} onMergeInto={onMergeInto} onOpen={onOpen} onSave={onSave} onUnlinkItem={onUnlinkItem} />)}
         {!items.length && <div className="task-table-empty"><Check /><span>{empty}</span></div>}
       </div>
     </section>
@@ -1115,12 +1194,13 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
   const dashboard = useMemo(() => {
     const open = filtered.filter((item) => !["Done", "Archived"].includes(item.status));
-    const today = open.filter(isTodayItem).sort(urgencySort);
-    const week = open.filter(isThisWeekItem).sort(urgencySort);
+    const openGrouped = collapseGroups(open);
+    const today = openGrouped.filter(isTodayItem).sort(urgencySort);
+    const week = openGrouped.filter(isThisWeekItem).sort(urgencySort);
     return {
       today,
       week,
-      longer: open.filter((item) => !isTodayItem(item) && !isThisWeekItem(item) && item.itemType !== "Reminder" && item.priority !== null && item.priority > 0).sort(urgencySort),
+      longer: openGrouped.filter((item) => !isTodayItem(item) && !isThisWeekItem(item) && item.itemType !== "Reminder" && item.priority !== null && item.priority > 0).sort(urgencySort),
       triage: open.filter(needsPriority).sort(attentionSort),
       reminders: open.filter((item) => item.itemType === "Reminder").sort(urgencySort),
       done: filtered.filter((item) => item.status === "Done").sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt)),
@@ -1208,6 +1288,44 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       toast.success(result.reassignedCount ? `Deleted. ${result.reassignedCount} task${result.reassignedCount === 1 ? "" : "s"} moved to no list.` : "List deleted.");
     } catch (deleteError) {
       toast.error(deleteError instanceof Error ? deleteError.message : "The list could not be deleted.");
+    }
+  };
+
+  const applyItemUpdates = (updated: BoardItem[]) => {
+    setData((current) => current ? {
+      ...current,
+      items: current.items.map((item) => updated.find((entry) => entry.id === item.id) || item),
+    } : current);
+  };
+
+  const mergeItems = async (draggedId: string, targetId: string) => {
+    if (!data) return;
+    try {
+      const result = await boardRequest({ action: "merge_items", id: draggedId, targetId });
+      applyItemUpdates(result.items);
+    } catch (mergeError) {
+      toast.error(mergeError instanceof Error ? mergeError.message : "Could not merge those tasks.");
+    }
+  };
+
+  const unlinkItem = async (id: string) => {
+    if (!data) return;
+    try {
+      const result = await boardRequest({ action: "unlink_item", id });
+      applyItemUpdates(result.items);
+    } catch (unlinkError) {
+      toast.error(unlinkError instanceof Error ? unlinkError.message : "Could not unlink that task.");
+    }
+  };
+
+  const disbandGroup = async (anchorId: string) => {
+    if (!data) return;
+    try {
+      const result = await boardRequest({ action: "disband_group", id: anchorId });
+      applyItemUpdates(result.items);
+      toast.success("Group disbanded.");
+    } catch (disbandError) {
+      toast.error(disbandError instanceof Error ? disbandError.message : "Could not disband that group.");
     }
   };
 
@@ -1325,9 +1443,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               icon={CalendarClock}
               items={dashboard.today}
               note="Today and overdue. Automatically added to Todoist."
+              onDisbandGroup={(id) => void disbandGroup(id)}
               onDrop={(id) => void saveItem(id, { scheduledFor: localIso(), showInTodoist: true })}
+              onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
+              onUnlinkItem={(id) => void unlinkItem(id)}
               title="Today"
             />
             <TaskTable
@@ -1337,9 +1458,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               icon={Zap}
               items={dashboard.week}
               note={`Tomorrow through ${dueLabel(weekEndIso())}`}
+              onDisbandGroup={(id) => void disbandGroup(id)}
               onDrop={(id) => void saveItem(id, { scheduledFor: weekEndIso() })}
+              onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
+              onUnlinkItem={(id) => void unlinkItem(id)}
               title="This week"
             />
             <TaskTable
@@ -1349,9 +1473,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               icon={History}
               items={dashboard.longer}
               note="After this week or no date. Highest attention first."
+              onDisbandGroup={(id) => void disbandGroup(id)}
               onDrop={(id) => void saveItem(id, { due: null, scheduledFor: null, dateMode: "unspecified" })}
+              onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
+              onUnlinkItem={(id) => void unlinkItem(id)}
               title="Longer"
             />
           </div>

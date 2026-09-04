@@ -26,6 +26,7 @@ export const items = sqliteTable(
     goal: text("goal"),
     originalNotes: text("original_notes"),
     tags: text("tags"),
+    groupId: text("group_id"),
     lastInteraction: text("last_interaction"),
     lastNudge: text("last_nudge"),
     completedAt: text("completed_at"),
@@ -45,6 +46,7 @@ export const items = sqliteTable(
     index("idx_items_owner_collection").on(table.ownerId, table.collection),
     index("idx_items_owner_type_status").on(table.ownerId, table.itemType, table.status),
     index("idx_items_owner_completed").on(table.ownerId, table.completedAt),
+    index("idx_items_owner_group").on(table.ownerId, table.groupId),
   ],
 );
 

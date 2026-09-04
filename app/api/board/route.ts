@@ -3,10 +3,13 @@ import {
   createItem,
   createList,
   deleteList,
+  disbandGroup,
   disconnectProvider,
   getBoard,
+  mergeItems,
   requireOwnerId,
   syncNotion,
+  unlinkFromGroup,
   updateItem,
   updateList,
 } from "@/lib/server/board-store";
@@ -45,6 +48,7 @@ export async function POST(request: Request) {
       listChanges?: EditableList;
       provider?: "notion" | "todoist";
       token?: string;
+      targetId?: string;
     };
 
     if (body.action === "create") {
@@ -61,6 +65,15 @@ export async function POST(request: Request) {
     }
     if (body.action === "list_delete" && body.id) {
       return Response.json(await deleteList(ownerId, body.id));
+    }
+    if (body.action === "merge_items" && body.id && body.targetId) {
+      return Response.json(await mergeItems(ownerId, body.id, body.targetId));
+    }
+    if (body.action === "unlink_item" && body.id) {
+      return Response.json(await unlinkFromGroup(ownerId, body.id));
+    }
+    if (body.action === "disband_group" && body.id) {
+      return Response.json(await disbandGroup(ownerId, body.id));
     }
     if (body.action === "connect" && body.provider) {
       return Response.json(await connectProvider(ownerId, body.provider, body.token || ""));

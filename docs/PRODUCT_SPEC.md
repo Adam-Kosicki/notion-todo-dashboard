@@ -46,6 +46,15 @@ Manage a list — rename, change type, toggle visibility, or delete — from the
 
 Tags are a lightweight, independent multi-select field on each item (`tags`, comma-separated, same shape as `context`), edited as colored blob pills you click to toggle or type to add. They're for cross-cutting filtering (e.g. "Sports") and don't affect an item's priority, position, or list membership. Tags sync to Notion as a "Tags" multi-select property when Notion is connected — if that property doesn't exist yet in the user's database, the Notion push for tag changes fails gracefully (the change stays saved locally) until the property is added there.
 
+## Groups
+
+A Group is a hard merge of two or more items into one unit with a single combined attention score (the max of members' effective attention — the most urgent member drives the group's visible urgency). Distinct from Tags: grouping affects display and urgency, not just filtering.
+
+- Form a Group by dragging one task row directly onto another (in Today, This week, Longer, Prioritize, Reminders, or Finished — not in Lists + goals, which still shows grouped items individually).
+- A Group displays as one collapsed row (the first-merged item's title, plus an "N tasks" badge) that expands on click to show every member as a normal, fully-interactive row — complete, edit, or drag any member independently.
+- **Unlink** (on a member row inside an expanded group) removes just that item from the group; if only one member is left, the group dissolves automatically. **Disband** (on the collapsed group row) breaks the whole group apart at once.
+- Local-only: Groups have no Notion equivalent and never round-trip there.
+
 ## Quick interaction model
 
 Hovering over a row exposes both a compact action toolbar and the full inline quick-edit form together — there is no separate "Quick edit" click to expand it.

@@ -24,7 +24,11 @@ Existing per-Item `status = "Archived"` — a reversible, recoverable removal of
 A lightweight, independent label (e.g. "Sports") attachable to any Item for filtering. Distinct from **Group** — an Item's Tags don't affect its individual attention score or position. Many-to-many in spirit; implemented as a comma-separated field the same way `context` already works, so it can round-trip to Notion as a multi-select property.
 
 ## Group
-A hard bundling of multiple Items into one unit that moves together and shares one combined attention score (planned: max of members' effective attention). Distinct from **Tag**. New concept — no existing schema support. Because Notion's schema is fixed/external, Group membership is expected to live only in the local database and not round-trip to Notion.
+A hard bundling of multiple Items into one unit that moves together and shares one combined attention score (max of members' effective attention). Distinct from **Tag**. Implemented via a single `groupId` column on `items`: the first Item merged becomes the **anchor** by self-referencing (`groupId = its own id`); every other member's `groupId` points at that same id. No group-metadata table. Local-only — Notion's schema is fixed/external, so Group membership never round-trips there.
+
+- Displays as one collapsed row (the anchor's title + a "N tasks" badge) that expands to show every member as a normal, fully-interactive row.
+- Formed by dragging one row directly onto another (in the Today/This week/Longer/Prioritize/Reminders/Finished views — the Lists+goals view doesn't collapse groups, a deliberate v1 scope cut).
+- **Unlink** removes one member from its Group (auto-dissolves the Group if only the anchor is left). **Disband** breaks the whole Group apart at once.
 
 ## Attention color
 The `heatColor()`/`--heat-color` CSS variable already computed per item from its effective attention (0–100 → hue). Rendered as a subtle whole-row background gradient wash (not just the small marker dot), intentionally kept low-opacity so the dashboard reads as "gently gradient-tinted," not high-contrast colored blocks.

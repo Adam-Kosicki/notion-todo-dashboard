@@ -22,6 +22,7 @@ export type BoardItem = {
   goal: string | null;
   originalNotes: string | null;
   tags: string | null;
+  groupId: string | null;
   lastInteraction: string | null;
   lastNudge: string | null;
   completedAt: string | null;
@@ -96,6 +97,7 @@ export type EditableChanges = Partial<Pick<BoardItem,
   | "goal"
   | "originalNotes"
   | "tags"
+  | "groupId"
   | "lastInteraction"
   | "completedAt"
   | "starred"
