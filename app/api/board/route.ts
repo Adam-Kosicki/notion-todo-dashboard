@@ -1,13 +1,16 @@
 import {
   connectProvider,
   createItem,
+  createList,
+  deleteList,
   disconnectProvider,
   getBoard,
   requireOwnerId,
   syncNotion,
   updateItem,
+  updateList,
 } from "@/lib/server/board-store";
-import type { EditableChanges } from "@/lib/board-types";
+import type { EditableChanges, EditableList } from "@/lib/board-types";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +39,10 @@ export async function POST(request: Request) {
       action?: string;
       id?: string;
       title?: string;
+      name?: string;
+      type?: string;
       changes?: EditableChanges;
+      listChanges?: EditableList;
       provider?: "notion" | "todoist";
       token?: string;
     };
@@ -46,6 +52,15 @@ export async function POST(request: Request) {
     }
     if (body.action === "update" && body.id && body.changes) {
       return Response.json(await updateItem(ownerId, body.id, body.changes));
+    }
+    if (body.action === "list_create") {
+      return Response.json({ list: await createList(ownerId, { name: body.name || "", type: body.type }) }, { status: 201 });
+    }
+    if (body.action === "list_update" && body.id && body.listChanges) {
+      return Response.json({ list: await updateList(ownerId, body.id, body.listChanges) });
+    }
+    if (body.action === "list_delete" && body.id) {
+      return Response.json(await deleteList(ownerId, body.id));
     }
     if (body.action === "connect" && body.provider) {
       return Response.json(await connectProvider(ownerId, body.provider, body.token || ""));

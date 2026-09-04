@@ -25,6 +25,7 @@ export const items = sqliteTable(
     project: text("project"),
     goal: text("goal"),
     originalNotes: text("original_notes"),
+    tags: text("tags"),
     lastInteraction: text("last_interaction"),
     lastNudge: text("last_nudge"),
     completedAt: text("completed_at"),
@@ -44,6 +45,26 @@ export const items = sqliteTable(
     index("idx_items_owner_collection").on(table.ownerId, table.collection),
     index("idx_items_owner_type_status").on(table.ownerId, table.itemType, table.status),
     index("idx_items_owner_completed").on(table.ownerId, table.completedAt),
+  ],
+);
+
+export const lists = sqliteTable(
+  "lists",
+  {
+    ownerId: text("owner_id").notNull(),
+    id: text("id").notNull(),
+    name: text("name").notNull(),
+    type: text("type").notNull().default("general"),
+    showPriority: integer("show_priority", { mode: "boolean" }),
+    showLongTermGoals: integer("show_long_term_goals", { mode: "boolean" }),
+    reminderDefault: text("reminder_default"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerId, table.id] }),
+    index("idx_lists_owner_name").on(table.ownerId, table.name),
   ],
 );
 

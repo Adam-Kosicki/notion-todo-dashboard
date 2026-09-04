@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   BellRing,
   CalendarClock,
+  CalendarPlus,
   CalendarX2,
   Check,
   CheckCircle2,
@@ -28,20 +29,24 @@ import {
   ShoppingCart,
   Sparkles,
   Target,
+  Trash2,
   Trophy,
   Unplug,
   WalletCards,
+  X,
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
-import type { BoardItem, BoardPayload, EditableChanges, RelationOption } from "@/lib/board-types";
+import { LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type RelationOption } from "@/lib/board-types";
 
 type BoardMode = "dashboard" | "prioritize" | "collections" | "reminders" | "completed";
 
@@ -178,6 +183,16 @@ function heatColor(item: BoardItem) {
   return `hsl(${hue} 72% 54%)`;
 }
 
+function tagColor(name: string) {
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) hash = (hash * 31 + name.charCodeAt(index)) % 360;
+  return `hsl(${hash} 62% 52%)`;
+}
+
+function tagList(value: string | null) {
+  return (value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+
 function attentionSort(a: BoardItem, b: BoardItem) {
   return effectiveAttention(b) - effectiveAttention(a)
     || (b.priority ?? -1) - (a.priority ?? -1)
@@ -252,9 +267,81 @@ function PriorityControl({
   );
 }
 
-function QuickEditor({ item, collections, onSave }: {
+function DateQuickPopover({ item, onSave }: {
+  item: BoardItem;
+  onSave: (id: string, changes: EditableChanges) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = inputDate(item.due);
+  const selected = current ? new Date(`${current}T00:00:00`) : undefined;
+  const setDate = (date: Date | undefined) => {
+    const iso = date ? localIso(date) : null;
+    onSave(item.id, { due: iso, dateMode: iso ? "date_set" : "unspecified" });
+    setOpen(false);
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={current ? "has-date" : ""}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {current ? <CalendarClock /> : <CalendarPlus />}
+          {current ? dueLabel(item.due) : "Add date"}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="date-quick-popover" onClick={(event) => event.stopPropagation()}>
+        <Calendar mode="single" selected={selected} onSelect={setDate} />
+        {current && <button type="button" className="date-clear" onClick={() => setDate(undefined)}><CalendarX2 />Clear date</button>}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function TagPicker({ value, allTags, onChange }: {
+  value: string | null;
+  allTags: string[];
+  onChange: (next: string | null) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const selected = tagList(value);
+  const selectedSet = new Set(selected);
+  const commit = (next: string[]) => onChange(next.length ? next.join(", ") : null);
+  const toggle = (tag: string) => commit(selectedSet.has(tag) ? selected.filter((entry) => entry !== tag) : [...selected, tag]);
+  const addDraft = () => {
+    const tag = draft.trim();
+    if (!tag) return;
+    if (!selectedSet.has(tag)) commit([...selected, tag]);
+    setDraft("");
+  };
+  const available = allTags.filter((tag) => !selectedSet.has(tag));
+  return (
+    <div className="tag-picker" onClick={(event) => event.stopPropagation()}>
+      <div className="tag-blobs">
+        {selected.map((tag) => (
+          <button key={tag} type="button" className="tag-blob selected" style={{ "--tag-color": tagColor(tag) } as CSSProperties} onClick={() => toggle(tag)}>
+            {tag}<X />
+          </button>
+        ))}
+        {available.map((tag) => (
+          <button key={tag} type="button" className="tag-blob" style={{ "--tag-color": tagColor(tag) } as CSSProperties} onClick={() => toggle(tag)}>
+            {tag}
+          </button>
+        ))}
+      </div>
+      <div className="tag-add-row">
+        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="New tag..." onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addDraft(); } }} />
+        <button type="button" onClick={addDraft} disabled={!draft.trim()}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+function QuickEditor({ item, collections, allTags, onSave }: {
   item: BoardItem;
   collections: string[];
+  allTags: string[];
   onSave: (id: string, changes: EditableChanges) => void;
 }) {
   const commitText = (key: "title" | "originalNotes" | "collection", value: string) => {
@@ -269,33 +356,34 @@ function QuickEditor({ item, collections, onSave }: {
         <label className="quick-field quick-title-field"><span>Name</span><input key={`${item.updatedAt}:title`} defaultValue={item.title} onBlur={(event) => commitText("title", event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>
         <label className="quick-field"><span>Due date</span><input key={`${item.updatedAt}:due`} type="date" defaultValue={inputDate(item.due)} onChange={(event) => onSave(item.id, { due: event.currentTarget.value || null, dateMode: event.currentTarget.value ? "date_set" : "unspecified" })} /></label>
         <label className="quick-field"><span>Date rule</span><select value={dateMode} onChange={(event) => onSave(item.id, { dateMode: event.currentTarget.value, ...(event.currentTarget.value === "no_date" ? { due: null, scheduledFor: null } : {}) })}>{DATE_MODES.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></label>
-        <label className="quick-field"><span>Tag / list</span><input key={`${item.updatedAt}:collection`} list={`collections-${item.id}`} defaultValue={item.collection || ""} placeholder="No tag" onBlur={(event) => commitText("collection", event.currentTarget.value)} /><datalist id={`collections-${item.id}`}>{collections.map((collection) => <option key={collection} value={collection} />)}</datalist></label>
+        <label className="quick-field"><span>List</span><input key={`${item.updatedAt}:collection`} list={`collections-${item.id}`} defaultValue={item.collection || ""} placeholder="No list" onBlur={(event) => commitText("collection", event.currentTarget.value)} /><datalist id={`collections-${item.id}`}>{collections.map((collection) => <option key={collection} value={collection} />)}</datalist></label>
         <label className="quick-field"><span>Type</span><select value={item.itemType} onChange={(event) => onSave(item.id, { itemType: event.currentTarget.value, ...(!usesPriority(event.currentTarget.value) ? { priority: 0 } : {}) })}>{ITEM_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
         <label className="quick-field quick-details-field"><span>Details</span><input key={`${item.updatedAt}:notes`} defaultValue={item.originalNotes || ""} placeholder="Add a short note" onBlur={(event) => commitText("originalNotes", event.currentTarget.value)} /></label>
         {item.itemType === "Reminder" && <>
           <label className="quick-field"><span>Repeat</span><select value={item.recurrence || ""} onChange={(event) => onSave(item.id, { recurrence: event.currentTarget.value || null })}><option value="">Does not repeat</option>{RECURRENCES.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
           <label className="quick-field"><span>Time</span><input type="time" value={item.reminderTime || ""} onChange={(event) => onSave(item.id, { reminderTime: event.currentTarget.value || null })} /></label>
         </>}
+        <label className="quick-field quick-tags-field"><span>Tags</span><TagPicker allTags={allTags} value={item.tags} onChange={(next) => onSave(item.id, { tags: next })} /></label>
         {usesPriority(item.itemType) && <div className="quick-priority"><PriorityControl item={item} key={`${item.id}:${item.priority ?? "unrated"}:quick`} onChange={(priority) => onSave(item.id, { priority })} /></div>}
       </div>
     </div>
   );
 }
 
-function TaskRow({ item, collections, completed = false, onOpen, onSave }: {
+function TaskRow({ item, collections, allTags, completed = false, onOpen, onSave }: {
   item: BoardItem;
   collections: string[];
+  allTags: string[];
   completed?: boolean;
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
 }) {
-  const [quickOpen, setQuickOpen] = useState(false);
   const done = ["Done", "Archived"].includes(item.status);
   const date = completed ? dueLabel(item.completedAt) : dueLabel(item.due || item.scheduledFor);
   const attention = Math.round(effectiveAttention(item));
   return (
     <article
-      className={`${done ? "dashboard-row is-done" : "dashboard-row"} ${item.dirty ? "is-dirty" : ""} ${quickOpen ? "quick-open" : ""}`}
+      className={`${done ? "dashboard-row is-done" : "dashboard-row"} ${item.dirty ? "is-dirty" : ""}`}
       draggable
       onDragStart={(event) => {
         if ((event.target as HTMLElement).closest("button, input, select, .priority-control")) {
@@ -312,7 +400,9 @@ function TaskRow({ item, collections, completed = false, onOpen, onSave }: {
         <GripVertical className="dashboard-drag" aria-hidden="true" />
         <button className="dashboard-title" onClick={() => onOpen(item)} type="button">
           <strong>{item.title}</strong>
-          <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}{item.showInTodoist && <em className="todoist-mark">T</em>}</span>
+          <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}{item.showInTodoist && <em className="todoist-mark">T</em>}
+            {tagList(item.tags).map((tag) => <em key={tag} className="tag-pill" style={{ "--tag-color": tagColor(tag) } as CSSProperties}>{tag}</em>)}
+          </span>
         </button>
         <span className={date?.includes("overdue") ? "dashboard-due overdue" : "dashboard-due"}>{date || "—"}</span>
         <span className="heat-score" title={`Combined urgency ${Math.round(attentionHeat(item))}`}><i />{attention}</span>
@@ -324,23 +414,23 @@ function TaskRow({ item, collections, completed = false, onOpen, onSave }: {
       </div>
       <div className="quick-toolbar" aria-label={`Quick actions for ${item.title}`}>
         <button type="button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })}><CheckCircle2 />{done ? "Reopen" : "Done"}</button>
-        <button type="button" onClick={() => onSave(item.id, { lastInteraction: new Date().toISOString() })}><Sparkles />Touched</button>
-        <button type="button" onClick={() => onSave(item.id, { due: null, scheduledFor: null, dateMode: "no_date" })}><CalendarX2 />No date</button>
-        <button type="button" className={quickOpen ? "selected" : ""} onClick={() => setQuickOpen((open) => !open)}><Gauge />Quick edit</button>
+        <button type="button" onClick={() => onSave(item.id, { lastInteraction: new Date().toISOString() })}><Sparkles />Active</button>
+        <DateQuickPopover item={item} onSave={onSave} />
         <button type="button" className="archive-action" onClick={() => onSave(item.id, { status: "Archived" })}><Archive />Archive</button>
       </div>
-      <QuickEditor item={item} collections={collections} onSave={onSave} />
+      <QuickEditor item={item} collections={collections} allTags={allTags} onSave={onSave} />
     </article>
   );
 }
 
-function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop }: {
+function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags, completed = false, onOpen, onSave, onDrop }: {
   title: string;
   note: string;
   items: BoardItem[];
   icon: typeof Flame;
   empty: string;
   collections: string[];
+  allTags: string[];
   completed?: boolean;
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
@@ -351,8 +441,101 @@ function TaskTable({ title, note, items, icon: Icon, empty, collections, complet
       <header className="task-table-head"><span className="task-table-icon"><Icon /></span><span><h2>{title}</h2><p>{note}</p></span><span className="task-table-count">{items.length}</span></header>
       <div className="task-table-columns" aria-hidden="true"><span>Task</span><span>{completed ? "Finished" : "Due"}</span><span>Attention</span><span>Priority</span><span /></div>
       <div className="task-table-body">
-        {items.map((item) => <TaskRow completed={completed} item={item} collections={collections} key={item.id} onOpen={onOpen} onSave={onSave} />)}
+        {items.map((item) => <TaskRow allTags={allTags} completed={completed} item={item} collections={collections} key={item.id} onOpen={onOpen} onSave={onSave} />)}
         {!items.length && <div className="task-table-empty"><Check /><span>{empty}</span></div>}
+      </div>
+    </section>
+  );
+}
+
+function ListManagePopover({ list, itemCount, onSave, onDelete }: {
+  list: BoardList;
+  itemCount: number;
+  onSave: (id: string, changes: EditableList) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const typeDefaults = listTypeDefaults(list.type);
+  const priorityMode = list.showPriority === null ? "default" : list.showPriority ? "on" : "off";
+  const goalsMode = list.showLongTermGoals === null ? "default" : list.showLongTermGoals ? "on" : "off";
+  return (
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setConfirmDelete(false); }}>
+      <PopoverTrigger asChild>
+        <button type="button" className="list-manage-trigger" aria-label={`Manage ${list.name}`} onClick={(event) => event.stopPropagation()}><Settings2 /></button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="list-manage-popover" onClick={(event) => event.stopPropagation()}>
+        <label className="quick-field">
+          <span>Name</span>
+          <input key={`${list.id}:name`} defaultValue={list.name} onBlur={(event) => { const value = event.currentTarget.value.trim(); if (value && value !== list.name) onSave(list.id, { name: value }); }} />
+        </label>
+        <label className="quick-field">
+          <span>List type</span>
+          <select value={list.type} onChange={(event) => onSave(list.id, { type: event.currentTarget.value })}>
+            {LIST_TYPES.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+          </select>
+        </label>
+        <div className="list-toggle-row">
+          <span>Priority slider</span>
+          <div className="tri-toggle">
+            <button type="button" className={priorityMode === "default" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: null })}>Default ({typeDefaults.showPriority ? "on" : "off"})</button>
+            <button type="button" className={priorityMode === "on" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: true })}>On</button>
+            <button type="button" className={priorityMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: false })}>Off</button>
+          </div>
+        </div>
+        {(list.showPriority ?? typeDefaults.showPriority) && (
+          <div className="list-toggle-row">
+            <span>Long-term goals section</span>
+            <div className="tri-toggle">
+              <button type="button" className={goalsMode === "default" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: null })}>Default ({typeDefaults.showLongTermGoals ? "on" : "off"})</button>
+              <button type="button" className={goalsMode === "on" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: true })}>On</button>
+              <button type="button" className={goalsMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: false })}>Off</button>
+            </div>
+          </div>
+        )}
+        {typeDefaults.hasReminderDefault && (
+          <label className="quick-field">
+            <span>Default reminder</span>
+            <input key={`${list.id}:reminder`} defaultValue={list.reminderDefault || ""} placeholder="e.g. Monthly on the 1st" onBlur={(event) => { const value = event.currentTarget.value.trim(); if (value !== (list.reminderDefault || "")) onSave(list.id, { reminderDefault: value || null }); }} />
+          </label>
+        )}
+        {confirmDelete ? (
+          <div className="list-delete-confirm">
+            <p>{itemCount ? `${itemCount} task${itemCount === 1 ? "" : "s"} will move to no list.` : "This list is empty."}</p>
+            <div>
+              <button type="button" onClick={() => setConfirmDelete(false)}>Cancel</button>
+              <button type="button" className="danger" onClick={() => { onDelete(list.id); setOpen(false); }}>Delete list</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="list-delete-trigger" onClick={() => setConfirmDelete(true)}><Trash2 />Delete list</button>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => void }) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState("general");
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onCreate(trimmed, type);
+    setName("");
+  };
+  return (
+    <section className="collection-card new-list-card">
+      <header className="collection-head">
+        <span className="collection-icon"><Plus /></span>
+        <span><h2>New list</h2><p>Create a list to organize tasks</p></span>
+      </header>
+      <div className="new-list-form">
+        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="List name" onKeyDown={(event) => { if (event.key === "Enter") submit(); }} />
+        <select value={type} onChange={(event) => setType(event.target.value)}>
+          {LIST_TYPES.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+        </select>
+        <button type="button" disabled={!name.trim()} onClick={submit}>Create list</button>
       </div>
     </section>
   );
@@ -360,18 +543,28 @@ function TaskTable({ title, note, items, icon: Icon, empty, collections, complet
 
 function CollectionsView({
   items,
+  lists,
   onOpen,
   onStatus,
   onPriority,
   onMove,
+  onCreateList,
+  onSaveList,
+  onDeleteList,
 }: {
   items: BoardItem[];
+  lists: BoardList[];
   onOpen: (item: BoardItem) => void;
   onStatus: (item: BoardItem) => void;
   onPriority: (id: string, priority: number) => void;
   onMove: (id: string, changes: EditableChanges) => void;
+  onCreateList: (name: string, type: string) => void;
+  onSaveList: (id: string, changes: EditableList) => void;
+  onDeleteList: (id: string) => void;
 }) {
+  const listsByName = useMemo(() => new Map(lists.map((list) => [list.name, list])), [lists]);
   const groups = new Map<string, BoardItem[]>();
+  for (const list of lists) groups.set(list.name, []);
   for (const item of items) {
     if (!item.collection && item.priority !== 0) continue;
     const name = item.collection || item.source || item.itemType || "Other";
@@ -390,14 +583,16 @@ function CollectionsView({
     return a.localeCompare(b);
   });
 
-  if (!order.length) {
-    return <div className="collections-empty"><PackageOpen /><h2>No collection items match these filters</h2><p>Try Open items or clear the search.</p></div>;
-  }
-
   return (
     <div className="collections-grid">
+      <NewListCard onCreate={onCreateList} />
+      {!order.length && <div className="collections-empty"><PackageOpen /><h2>No collection items match these filters</h2><p>Try Open items or clear the search.</p></div>}
       {order.map((name) => {
         const Icon = collectionIcon(name);
+        const list = listsByName.get(name) || null;
+        const typeDefaults = listTypeDefaults(list?.type || "general");
+        const showPriority = list?.showPriority ?? typeDefaults.showPriority;
+        const showLongTermGoals = list?.showLongTermGoals ?? typeDefaults.showLongTermGoals;
         const group = (groups.get(name) || []).sort((a, b) => {
           const done = Number(["Done", "Archived"].includes(a.status)) - Number(["Done", "Archived"].includes(b.status));
           return done || (b.priority ?? -1) - (a.priority ?? -1) || effectiveAttention(b) - effectiveAttention(a) || a.title.localeCompare(b.title);
@@ -441,15 +636,17 @@ function CollectionsView({
                   {effectiveAttention(item) > 0.25 && <><i>·</i><em>Attention {Math.round(effectiveAttention(item))}</em></>}
                 </span>
               </button>
-              <span className={item.priority === null ? "row-score unrated" : item.priority === 0 ? "row-score zero" : "row-score"}>
-                {item.priority === null ? "?" : item.priority}
-              </span>
-              <PriorityControl
-                compact
-                item={item}
-                key={`${item.id}:${item.priority ?? "unrated"}:collection`}
-                onChange={(priority) => onPriority(item.id, priority)}
-              />
+              {showPriority ? <>
+                <span className={item.priority === null ? "row-score unrated" : item.priority === 0 ? "row-score zero" : "row-score"}>
+                  {item.priority === null ? "?" : item.priority}
+                </span>
+                <PriorityControl
+                  compact
+                  item={item}
+                  key={`${item.id}:${item.priority ?? "unrated"}:collection`}
+                  onChange={(priority) => onPriority(item.id, priority)}
+                />
+              </> : <span className="non-priority-type">{item.itemType}</span>}
               <button className="row-open" onClick={() => onOpen(item)} type="button" aria-label={`Edit ${item.title}`}><ChevronRight /></button>
             </article>
           );
@@ -483,19 +680,22 @@ function CollectionsView({
             onDrop={(event) => {
               event.preventDefault();
               const id = event.dataTransfer.getData("text/plain");
-              if (id) onMove(id, name === "Grocery" ? { collection: name, priority: 0, itemType: "Task" } : { collection: name });
+              if (id) onMove(id, showPriority ? { collection: name } : { collection: name, priority: 0 });
             }}
           >
             <header className="collection-head">
               <span className="collection-icon"><Icon /></span>
               <span><h2>{name}</h2><p>{openCount} open · {group.length} shown</p></span>
+              {list && <ListManagePopover list={list} itemCount={group.length} onSave={onSaveList} onDelete={onDeleteList} />}
               <span className="drop-note">Drop here</span>
             </header>
             <div className="collection-subtables">
-              {subtable("Prioritized", prioritized, {}, "priority")}
-              {subtable("No priority", unrated, { priority: null }, "unrated", true)}
-              {name !== "Grocery" && subtable("Long-term goals", longGoals, { priority: 0, itemType: "Goal" }, "goals", true)}
-              {subtable(name === "Grocery" ? "Items" : "Long-term tasks + items", longItems, { priority: 0, itemType: "Task" }, "long", true)}
+              {showPriority ? <>
+                {subtable("Prioritized", prioritized, {}, "priority")}
+                {subtable("No priority", unrated, { priority: null }, "unrated", true)}
+                {showLongTermGoals && subtable("Long-term goals", longGoals, { priority: 0, itemType: "Goal" }, "goals", true)}
+                {subtable(showLongTermGoals ? "Long-term tasks + items" : "Long-term + everything else", longItems, { priority: 0, itemType: "Task" }, "long", true)}
+              </> : subtable("Items", group, {}, "flat", true)}
             </div>
           </section>
         );
@@ -703,7 +903,7 @@ function EditorSheet({
                 }}
               />
               <div className="editor-actions">
-                <button type="button" className="touch-button" onClick={() => void save({ lastInteraction: new Date().toISOString() })}><Sparkles />Mark touched now</button>
+                <button type="button" className="touch-button" onClick={() => void save({ lastInteraction: new Date().toISOString() })}><Sparkles />Mark active now</button>
                 <label className="star-toggle"><Switch checked={item.starred} onCheckedChange={(checked) => void save({ starred: checked })} /><span>Starred</span></label>
               </div>
             </section>
@@ -711,7 +911,7 @@ function EditorSheet({
             <div className="record-meta">
               <span>Attention {Math.round(item.attentionScore)}</span>
               <span>{Math.round(item.stalenessDays)} days stale</span>
-              {item.lastInteraction && <span>Last touched {new Date(item.lastInteraction).toLocaleString()}</span>}
+              {item.lastInteraction && <span>Last active {new Date(item.lastInteraction).toLocaleString()}</span>}
               {item.todoistId && <a href={`https://app.todoist.com/app/task/${item.todoistId}`} target="_blank" rel="noreferrer">Open in Todoist <ExternalLink /></a>}
             </div>
           </div>
@@ -974,6 +1174,43 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     }
   };
 
+  const createList = async (name: string, type: string) => {
+    if (!data) return;
+    try {
+      const result = await boardRequest({ action: "list_create", name, type });
+      setData((current) => current ? { ...current, lists: [...current.lists, result.list].sort((a, b) => a.name.localeCompare(b.name)) } : current);
+      toast.success(`Created "${name}".`);
+    } catch (createError) {
+      toast.error(createError instanceof Error ? createError.message : "The list could not be created.");
+    }
+  };
+
+  const saveList = async (id: string, listChanges: EditableList) => {
+    if (!data) return;
+    try {
+      const result = await boardRequest({ action: "list_update", id, listChanges });
+      setData((current) => current ? { ...current, lists: current.lists.map((list) => list.id === id ? result.list : list) } : current);
+    } catch (saveError) {
+      toast.error(saveError instanceof Error ? saveError.message : "The list did not save.");
+    }
+  };
+
+  const deleteList = async (id: string) => {
+    if (!data) return;
+    const list = data.lists.find((entry) => entry.id === id);
+    try {
+      const result = await boardRequest({ action: "list_delete", id });
+      setData((current) => current ? {
+        ...current,
+        lists: current.lists.filter((entry) => entry.id !== id),
+        items: current.items.map((item) => item.collection === list?.name ? { ...item, collection: null } : item),
+      } : current);
+      toast.success(result.reassignedCount ? `Deleted. ${result.reassignedCount} task${result.reassignedCount === 1 ? "" : "s"} moved to no list.` : "List deleted.");
+    } catch (deleteError) {
+      toast.error(deleteError instanceof Error ? deleteError.message : "The list could not be deleted.");
+    }
+  };
+
   const exportCsv = () => {
     if (!data) return;
     const keys: Array<keyof BoardItem> = ["title", "status", "collection", "priority", "itemType", "source", "due", "scheduledFor", "dateMode", "recurrence", "reminderTime", "energy", "context", "area", "project", "goal", "originalNotes", "lastInteraction", "completedAt", "starred", "showInTodoist", "todoistId", "id"];
@@ -995,6 +1232,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   );
 
   const sources = [...new Set(data.items.map((item) => item.source).filter(Boolean) as string[])].sort();
+  const allTags = [...new Set(data.items.flatMap((item) => tagList(item.tags)))].sort((a, b) => a.localeCompare(b));
   const collectionCount = new Set(filtered.filter((item) => item.collection || item.priority === 0).map((item) => item.collection || item.source || item.itemType)).size;
 
   return (
@@ -1081,6 +1319,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         <section className="dashboard-wrap">
           <div className="dashboard-grid">
             <TaskTable
+              allTags={allTags}
               collections={data.collections}
               empty="Nothing due or scheduled today"
               icon={CalendarClock}
@@ -1092,6 +1331,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               title="Today"
             />
             <TaskTable
+              allTags={allTags}
               collections={data.collections}
               empty="Nothing scheduled for the rest of this week"
               icon={Zap}
@@ -1103,6 +1343,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               title="This week"
             />
             <TaskTable
+              allTags={allTags}
               collections={data.collections}
               empty="No longer-range prioritized tasks match these filters"
               icon={History}
@@ -1119,6 +1360,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       ) : mode === "prioritize" ? (
         <section className="dashboard-wrap prioritize-wrap">
           <TaskTable
+            allTags={allTags}
             collections={data.collections}
             empty="Everything uncategorized has a priority"
             icon={Gauge}
@@ -1134,9 +1376,13 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         <section className="collections-wrap">
           <CollectionsView
             items={filtered}
+            lists={data.lists}
+            onCreateList={(name, type) => void createList(name, type)}
+            onDeleteList={(id) => void deleteList(id)}
             onOpen={(item) => setSelectedId(item.id)}
             onPriority={(id, priority) => void saveItem(id, { priority })}
             onMove={(id, changes) => void saveItem(id, changes)}
+            onSaveList={(id, changes) => void saveList(id, changes)}
             onStatus={(item) => void saveItem(item.id, { status: ["Done", "Archived"].includes(item.status) ? "Not started" : "Done" })}
           />
         </section>
@@ -1144,6 +1390,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         <section className="dashboard-wrap single-table-wrap">
           <div className="reminder-note"><BellRing /><span><strong>Reminder schedule</strong><small>Dates, times, and repeat rules are saved now. Apple Reminders or Google Calendar can handle notifications when that connection is added.</small></span></div>
           <TaskTable
+            allTags={allTags}
             collections={data.collections}
             empty="No recurring reminders yet"
             icon={BellRing}
@@ -1164,6 +1411,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           </div>
           <div className="productivity-grid">
             <TaskTable
+              allTags={allTags}
               collections={data.collections}
               completed
               empty="Finished tasks will appear here"
@@ -1175,6 +1423,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               title="Finished"
             />
             <TaskTable
+              allTags={allTags}
               collections={data.collections}
               empty="Nothing archived"
               icon={Archive}

@@ -19,7 +19,7 @@ The Plan view has three tables in this order:
 2. This week. Includes the remaining days through Sunday.
 3. Longer. Includes priority-bearing work outside Today and This week, including work without a date.
 
-Each table sorts by combined urgency, then stored attention, numeric priority, date, and name. A due date that is close or overdue raises effective attention. The row border, task name, and attention marker move from green to yellow to red as urgency rises.
+Each table sorts by combined urgency, then stored attention, numeric priority, date, and name. A due date that is close or overdue raises effective attention. The row border, task name, and the row's whole background (a subtle gradient wash, not just the marker dot) move from green to yellow to red as urgency rises.
 
 Dragging an item into Today schedules it for today. Dragging it into This week schedules it for Sunday. Dragging it into Longer clears its active due and scheduled dates.
 
@@ -28,21 +28,34 @@ Dragging an item into Today schedules it for today. Dragging it into This week s
 - Actionable tasks use a 0 to 10 priority slider.
 - Priority 0 is reserved for non-action or long-term objects.
 - Goals, reminders, purchases, list items, someday items, and references do not show the priority slider.
-- Grocery, Wish List, Bucket List, Monthly Payments, and Warranties remain their own tables instead of entering the prioritization queue.
+- Whether a list shows the priority queue (Prioritized / No priority / Long-term goals) or a flat Items list is now driven by that **List's Type** (see below), not a hardcoded list name. Grocery, Wish List, Bucket List, Monthly Payments, and Warranties get this behavior today because they were inferred into non-priority types on first load — any list can be reconfigured from its own manage popover.
 - Prioritize shows only tasks with no priority and no collection, area, project, goal, or context.
+
+## Lists
+
+Lists are a real, per-owner entity (`lists` table), not just derived strings. Each List has:
+
+- A **name** (what items' `collection` field matches).
+- A **List Type**: General, Goals, Shopping, Recurring payments, or Reference — each with defaults for whether the priority slider and the Long-term goals subtable are shown.
+- Optional **per-list overrides** of those two visibility flags (Default / On / Off), so an individual list can diverge from its type's default.
+- A **reminder default** (only surfaced for Recurring payments lists).
+
+Manage a list — rename, change type, toggle visibility, or delete — from the gear icon on its card header in "Lists + goals". Deleting a list is permanent (no archive state for lists); any items still in it fall back to no list rather than being deleted. List-level fields (type, visibility overrides, reminder default) are local-only and do not round-trip to Notion, since they have no corresponding Notion property — only each item's own `collection` string does.
+
+## Tags
+
+Tags are a lightweight, independent multi-select field on each item (`tags`, comma-separated, same shape as `context`), edited as colored blob pills you click to toggle or type to add. They're for cross-cutting filtering (e.g. "Sports") and don't affect an item's priority, position, or list membership. Tags sync to Notion as a "Tags" multi-select property when Notion is connected — if that property doesn't exist yet in the user's database, the Notion push for tag changes fails gracefully (the change stays saved locally) until the property is added there.
 
 ## Quick interaction model
 
-Hovering over a row exposes a toolbar. Touch devices show it by default.
+Hovering over a row exposes both a compact action toolbar and the full inline quick-edit form together — there is no separate "Quick edit" click to expand it.
 
 - Done records a completion timestamp and moves the item to Finished.
-- Touched records the current timestamp in `Last Interaction`.
-- No date clears Due and Scheduled and marks the item as not needing a date.
-- Quick edit expands an inline form for name, due date, date rule, tag or list, item type, details, and priority when applicable.
+- Active records the current timestamp in `Last Interaction` (renamed from "Touched"). Every saved change updates it automatically regardless of which button is used; the manual button exists for days when progress happened without another field changing.
+- The date action shows "Add date" (opens a small calendar popover to set one) when the item has no date, or the date itself (opens the same popover, pre-filled, with a Clear-date option) when it does — a single control for both directions, not a one-way clear button.
+- The inline form covers name, due date, date rule, list, item type, details, tags, and priority when applicable.
 - Archive removes the item from active views. When Notion is connected, its page moves to Notion trash rather than being permanently deleted.
 - Clicking the task name opens the full editor with every Notion field supported by the Site.
-
-Every saved change updates `Last Interaction` automatically. Explicitly marking an item as touched exists for days when progress happened without another field changing.
 
 ## Completion and productivity
 

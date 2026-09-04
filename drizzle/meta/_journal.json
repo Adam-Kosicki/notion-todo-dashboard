@@ -22,6 +22,20 @@
       "when": 1788469288409,
       "tag": "0002_tan_agent_zero",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788482485695,
+      "tag": "0003_fast_baron_strucker",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788482873637,
+      "tag": "0004_superb_lucky_pierre",
+      "breakpoints": true
     }
   ]
 }

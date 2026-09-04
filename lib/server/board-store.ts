@@ -3,7 +3,7 @@ import "server-only";
 
 import { env } from "cloudflare:workers";
 import { headers } from "next/headers";
-import type { BoardItem, BoardPayload, EditableChanges, RelationOption } from "@/lib/board-types";
+import type { BoardItem, BoardList, BoardPayload, EditableChanges, EditableList, RelationOption } from "@/lib/board-types";
 
 const NOTION_VERSION = "2026-03-11";
 
@@ -26,6 +26,7 @@ const COLUMN_MAP: Record<string, string> = {
   project: "project",
   goal: "goal",
   originalNotes: "original_notes",
+  tags: "tags",
   lastInteraction: "last_interaction",
   completedAt: "completed_at",
   starred: "starred",
@@ -111,7 +112,7 @@ function nullable(value: unknown) {
 
 const ITEM_COLUMNS = [
   "owner_id", "id", "title", "status", "burner", "priority", "priority_level", "item_type",
-  "source", "collection", "due", "scheduled_for", "date_mode", "recurrence", "reminder_time", "energy", "context", "area", "project", "goal", "original_notes",
+  "source", "collection", "due", "scheduled_for", "date_mode", "recurrence", "reminder_time", "energy", "context", "area", "project", "goal", "original_notes", "tags",
   "last_interaction", "last_nudge", "completed_at", "attention_score", "staleness_days", "starred", "todoist_id",
   "show_in_todoist", "dirty", "raw_json",
 ];
@@ -139,6 +140,7 @@ function itemValues(ownerId: string, item: StoredItem) {
     nullable(item.project),
     nullable(item.goal),
     nullable(item.originalNotes),
+    nullable(item.tags),
     nullable(item.lastInteraction),
     nullable(item.lastNudge),
     nullable(item.completedAt),
@@ -271,6 +273,7 @@ function rowToItem(row: any): BoardItem {
     project: row.project,
     goal: row.goal,
     originalNotes: row.original_notes,
+    tags: row.tags,
     lastInteraction: row.last_interaction,
     lastNudge: row.last_nudge,
     completedAt: row.completed_at,
@@ -282,6 +285,136 @@ function rowToItem(row: any): BoardItem {
     dirty: bool(row.dirty),
     updatedAt: row.updated_at,
   };
+}
+
+function rowToList(row: any): BoardList {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    showPriority: row.show_priority === null || row.show_priority === undefined ? null : Boolean(row.show_priority),
+    showLongTermGoals: row.show_long_term_goals === null || row.show_long_term_goals === undefined ? null : Boolean(row.show_long_term_goals),
+    reminderDefault: row.reminder_default,
+    sortOrder: Number(row.sort_order || 0),
+  };
+}
+
+const LIST_TYPE_HINTS: Record<string, string> = {
+  Grocery: "shopping",
+  "Wish List": "reference",
+  "Bucket List": "reference",
+  "Monthly Payments": "recurring_payment",
+  Warranties: "reference",
+  Goals: "goal",
+};
+
+function inferListType(name: string) {
+  return LIST_TYPE_HINTS[name] || "general";
+}
+
+export async function ensureListsBackfill(ownerId: string) {
+  const db = runtime().DB;
+  const marker = await db
+    .prepare("SELECT value FROM app_meta WHERE owner_id = ? AND key = ?")
+    .bind(ownerId, "lists_v1")
+    .first();
+  if (marker) return;
+
+  const existing = await db.prepare("SELECT name FROM lists WHERE owner_id = ?").bind(ownerId).all();
+  const existingNames = new Set((existing.results || []).map((row: any) => row.name));
+  const collections = await db
+    .prepare("SELECT DISTINCT collection FROM items WHERE owner_id = ? AND collection IS NOT NULL")
+    .bind(ownerId)
+    .all();
+  const names = (collections.results || [])
+    .map((row: any) => row.collection as string)
+    .filter((name: string) => name && !existingNames.has(name));
+  const now = new Date().toISOString();
+  const statements = names.map((name: string, index: number) =>
+    db.prepare(
+      "INSERT INTO lists (owner_id, id, name, type, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).bind(ownerId, `list_${crypto.randomUUID()}`, name, inferListType(name), index, now, now),
+  );
+  for (let index = 0; index < statements.length; index += 40) {
+    await db.batch(statements.slice(index, index + 40));
+  }
+  await db.prepare("INSERT OR REPLACE INTO app_meta (owner_id, key, value) VALUES (?, ?, ?)")
+    .bind(ownerId, "lists_v1", "backfilled")
+    .run();
+}
+
+export async function listLists(ownerId: string): Promise<BoardList[]> {
+  const db = runtime().DB;
+  const result = await db
+    .prepare("SELECT * FROM lists WHERE owner_id = ? ORDER BY sort_order, name COLLATE NOCASE")
+    .bind(ownerId)
+    .all();
+  return (result.results || []).map(rowToList);
+}
+
+async function findList(ownerId: string, id: string) {
+  const row = await runtime().DB.prepare("SELECT * FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).first();
+  if (!row) throw new Error("List not found.");
+  return row as Record<string, unknown> & { name: string };
+}
+
+export async function createList(ownerId: string, input: { name: string; type?: string }) {
+  const name = input.name.trim();
+  if (!name) throw new Error("Give the list a name first.");
+  const db = runtime().DB;
+  const existing = await db.prepare("SELECT id FROM lists WHERE owner_id = ? AND name = ?").bind(ownerId, name).first();
+  if (existing) throw new Error("A list with that name already exists.");
+  const id = `list_${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  const countRow = await db.prepare("SELECT COUNT(*) as count FROM lists WHERE owner_id = ?").bind(ownerId).first() as { count: number } | null;
+  await db.prepare(
+    "INSERT INTO lists (owner_id, id, name, type, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).bind(ownerId, id, name, input.type || "general", countRow?.count || 0, now, now).run();
+  return rowToList(await db.prepare("SELECT * FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).first());
+}
+
+export async function updateList(ownerId: string, id: string, changes: EditableList) {
+  const db = runtime().DB;
+  const current = await findList(ownerId, id);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+
+  if (changes.name) {
+    const trimmed = changes.name.trim();
+    if (trimmed && trimmed !== current.name) {
+      // Items only reference a list by its name string, so a rename has to carry every item along.
+      // Notion's "Legacy List" select stays out of sync here (like any other bulk edit) until each
+      // item is touched again — there is no bulk-push path today, only per-item updateItem() syncs.
+      await db.prepare("UPDATE items SET collection = ?, dirty = 1 WHERE owner_id = ? AND collection = ?")
+        .bind(trimmed, ownerId, current.name).run();
+      sets.push("name = ?");
+      values.push(trimmed);
+    }
+  }
+  if ("type" in changes) { sets.push("type = ?"); values.push(changes.type); }
+  if ("showPriority" in changes) { sets.push("show_priority = ?"); values.push(changes.showPriority === null || changes.showPriority === undefined ? null : changes.showPriority ? 1 : 0); }
+  if ("showLongTermGoals" in changes) { sets.push("show_long_term_goals = ?"); values.push(changes.showLongTermGoals === null || changes.showLongTermGoals === undefined ? null : changes.showLongTermGoals ? 1 : 0); }
+  if ("reminderDefault" in changes) { sets.push("reminder_default = ?"); values.push(nullable(changes.reminderDefault)); }
+
+  if (sets.length) {
+    sets.push("updated_at = CURRENT_TIMESTAMP");
+    await db.prepare(`UPDATE lists SET ${sets.join(", ")} WHERE owner_id = ? AND id = ?`).bind(...values, ownerId, id).run();
+  }
+  return rowToList(await db.prepare("SELECT * FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).first());
+}
+
+export async function deleteList(ownerId: string, id: string) {
+  const db = runtime().DB;
+  const current = await findList(ownerId, id);
+  const countRow = await db.prepare("SELECT COUNT(*) as count FROM items WHERE owner_id = ? AND collection = ?")
+    .bind(ownerId, current.name).first() as { count: number } | null;
+  const reassignedCount = countRow?.count || 0;
+  if (reassignedCount > 0) {
+    await db.prepare("UPDATE items SET collection = NULL, dirty = 1 WHERE owner_id = ? AND collection = ?")
+      .bind(ownerId, current.name).run();
+  }
+  await db.prepare("DELETE FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).run();
+  return { deleted: true, reassignedCount };
 }
 
 function relationOption(value: string | null): RelationOption | null {
@@ -308,6 +441,7 @@ function collectRelations(items: BoardItem[], key: "area" | "project" | "goal") 
 export async function getBoard(ownerId: string): Promise<BoardPayload> {
   await ensureSeed(ownerId);
   await ensureOrganization(ownerId);
+  await ensureListsBackfill(ownerId);
   const db = runtime().DB;
   const result = await db.prepare(
     "SELECT * FROM items WHERE owner_id = ? ORDER BY CASE status WHEN 'In progress' THEN 0 WHEN 'Not started' THEN 1 ELSE 2 END, COALESCE(priority, -1) DESC, attention_score DESC, title COLLATE NOCASE",
@@ -337,6 +471,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
       goals: collectRelations(items, "goal"),
     },
     collections: [...new Set(items.map((item) => item.collection).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b)),
+    lists: await listLists(ownerId),
     importedCount: items.length,
   };
 }
@@ -454,6 +589,7 @@ function notionProperties(changes: EditableChanges) {
   if ("lastInteraction" in changes) properties["Last Interaction"] = { date: dateValue(changes.lastInteraction) };
   if ("completedAt" in changes) properties["Completed At"] = { date: dateValue(changes.completedAt) };
   if ("context" in changes) properties.Context = { multi_select: (changes.context || "").split(",").map((name) => name.trim()).filter(Boolean).map((name) => ({ name })) };
+  if ("tags" in changes) properties.Tags = { multi_select: (changes.tags || "").split(",").map((name) => name.trim()).filter(Boolean).map((name) => ({ name })) };
   if ("originalNotes" in changes) properties["Original Notes"] = { rich_text: richText(changes.originalNotes) };
   if ("starred" in changes) properties.Starred = { checkbox: Boolean(changes.starred) };
   if ("showInTodoist" in changes) properties["Show in Todoist"] = { checkbox: Boolean(changes.showInTodoist) };
@@ -757,6 +893,7 @@ export async function syncNotion(ownerId: string) {
       reminderTime: reminder.reminderTime,
       energy: propertyText(p.Energy),
       context: propertyText(p.Context),
+      tags: propertyText(p.Tags),
       area: relationDisplay(p.Area, areas),
       project: relationDisplay(p.Project, projects),
       goal: relationDisplay(p.Goal, goals),
