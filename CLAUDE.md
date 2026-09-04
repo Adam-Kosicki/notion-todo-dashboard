@@ -13,6 +13,10 @@ https://github.com/Adam-Kosicki/notion-todo-dashboard
   - Grep staged/new content for things like `ntn_`, API keys, tokens, passwords before committing, not after.
 - Never commit the local D1 database file or any backup of it (`.wrangler/state/**/*.sqlite*`) — it contains real personal task data and encrypted Notion/Todoist tokens.
 
+## Communication style
+
+- Before sending a chat response, run it through `/unslop`: plain, direct, human phrasing — no AI writing tells ("Here's the thing:", "Let that sink in", em-dash-heavy hedging, unearned enthusiasm).
+
 ## Local dev environment
 
 - `node`/`npm` are not on the default PATH in this environment; a working Node install lives at `D:\DevOps`. Git Bash sessions get this from `~/.bashrc`/`~/.bash_profile` (`export PATH="/d/DevOps:$PATH"`) already — a fresh terminal should just work.
