@@ -29,12 +29,14 @@ export function HistoryView({
   onOpen,
   onSave,
   onDelete,
+  onBulkSave,
 }: {
   items: BoardItem[];
   collections: string[];
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
   onDelete: (id: string) => void;
+  onBulkSave: (ids: string[], changes: EditableChanges) => Promise<{ applied: number; failed: number }>;
 }) {
   const [status, setStatus] = useState<"done" | "archived">("done");
   const [search, setSearch] = useState("");
@@ -85,6 +87,7 @@ export function HistoryView({
         icon={status === "done" ? Trophy : Archive}
         items={visible}
         note={status === "done" ? "Your productivity history" : "Removed from active views, but still recoverable"}
+        onBulkSave={onBulkSave}
         onDelete={onDelete}
         onOpen={onOpen}
         onSave={onSave}

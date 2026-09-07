@@ -59,7 +59,7 @@ Tags are a lightweight, independent multi-select field on each item (`tags`, com
 
 A Group is a hard merge of two or more items into one unit with a single combined attention score (the max of members' effective attention — the most urgent member drives the group's visible urgency). Distinct from Tags: grouping affects display and urgency, not just filtering.
 
-- Form a Group by dragging one task row directly onto another (in Today, This week, Longer, Prioritize, Reminders, or Finished — not in Lists + goals, which still shows grouped items individually).
+- Form a Group by dragging one task row directly onto another. (This line predates several later changes — see `docs/adr/0002-groups-and-tags-are-separate.md`'s stale-reference note for what's since drifted.) As of Phase 2, a row also has a keyboard/touch-accessible "Group with…" dropdown alongside its "Move to list…" one, for grouping without drag-and-drop.
 - A Group displays as one collapsed row (the first-merged item's title, plus an "N tasks" badge) that expands on click to show every member as a normal, fully-interactive row — complete, edit, or drag any member independently.
 - **Unlink** (on a member row inside an expanded group) removes just that item from the group; if only one member is left, the group dissolves automatically. **Disband** (on the collapsed group row) breaks the whole group apart at once.
 - Local-only: Groups have no Notion equivalent and never round-trip there.
@@ -73,7 +73,8 @@ Hovering over a row exposes both a compact action toolbar and the full inline qu
 - The date action shows "Add date" (opens a small calendar popover to set one) when the item has no date, or the date itself (opens the same popover, pre-filled, with a Clear-date option) when it does — a single control for both directions, not a one-way clear button.
 - The inline form covers name, due date, date rule, list, item type, details, tags, and priority when applicable.
 - Archive removes the item from active views. When Notion is connected, its page moves to Notion trash rather than being permanently deleted.
-- Clicking the task name opens the full editor with every Notion field supported by the Site.
+- Clicking the task name opens the full editor. As of Phase 2 of `docs/plans/burner-board-roadmap.md`, it shows a core set (importance, status, list, due date, notes) by default; item type, scheduled date, date rule, repeat/reminder time, energy, context, area/project/goal, and starred sit behind a "More fields" toggle, collapsed by default. Hiding a field never changes its stored value.
+- Selecting "Select" on a list/table lets you check several tasks and apply one bulk action (move to list, set item type, or set importance) to all of them at once, with a preview line before applying and an honest partial-failure report if some fail.
 
 ## Completion and productivity
 

@@ -39,6 +39,7 @@ import { toast } from "sonner";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -50,6 +51,7 @@ import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardLis
 import OrganizeMode from "./organize-mode";
 import "./organize.css";
 import { HistoryView } from "@/components/board/history-view";
+import { BulkActionBar } from "@/components/board/bulk-actions";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
 import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, plannedDate, reorderedListIds } from "@/lib/list-behavior";
@@ -353,12 +355,17 @@ function QuickEditor({ item, collections, onSave }: {
   );
 }
 
-function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
+function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, selectable = false, selected = false, onToggleSelect, mergeCandidates, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
   item: GroupedItem;
   collections: string[];
   completed?: boolean;
   showPriority?: boolean;
   groupMemberOf?: string;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  /** Phase 2: a keyboard/touch alternative to the shift+drag merge gesture. Other rows in the same table this one could group with (excludes itself). Omit to hide the control entirely. */
+  mergeCandidates?: GroupedItem[];
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
   onMergeInto?: (draggedId: string, targetId: string) => void;
@@ -401,6 +408,16 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
       style={{ "--heat-color": heatColor(item) } as CSSProperties}
     >
       <div className="dashboard-row-main">
+        {selectable && (
+          <input
+            type="checkbox"
+            className="row-select-checkbox"
+            aria-label={`Select ${item.title}`}
+            checked={selected}
+            onClick={(event) => event.stopPropagation()}
+            onChange={() => onToggleSelect?.(item.id)}
+          />
+        )}
         <button aria-label={done ? `Reopen ${item.title}` : `Complete ${item.title}`} className="check-button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })} type="button">{done ? <CheckCircle2 /> : <span />}</button>
         <GripVertical className="dashboard-drag" aria-hidden="true" />
         <button className="dashboard-title" onClick={() => isGroup ? setExpanded((open) => !open) : onOpen(item)} type="button">
@@ -427,6 +444,15 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
             {collections.map(name => <option key={name} value={name}>{name}</option>)}
           </select>
         </label>
+        {!!mergeCandidates?.length && onMergeInto && (
+          <label className="move-list-control">
+            <span className="sr-only">Group {item.title} with another task</span>
+            <select aria-label={`Group ${item.title} with another task`} value="" onChange={(event) => { if (event.currentTarget.value) onMergeInto(item.id, event.currentTarget.value); }}>
+              <option value="" disabled>Group with…</option>
+              {mergeCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
+            </select>
+          </label>
+        )}
         {groupMemberOf && onUnlinkItem ? (
           <button type="button" onClick={() => onUnlinkItem(item.id)}><Ungroup />Unlink</button>
         ) : isGroup && onDisbandGroup ? (
@@ -466,7 +492,7 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
   );
 }
 
-export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
+export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, onBulkSave }: {
   title: string;
   note: string;
   items: GroupedItem[];
@@ -481,13 +507,72 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
   onUnlinkItem?: (id: string) => void;
   onDisbandGroup?: (anchorId: string) => void;
   onDelete?: (id: string) => void;
+  /** Optional: when provided, a "Select" toggle and bulk move/type/importance actions become available. Omit to keep a table read-only-for-selection (e.g. inside an expanded group). */
+  onBulkSave?: (ids: string[], changes: EditableChanges) => Promise<{ applied: number; failed: number }>;
 }) {
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelect = (id: string) => setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const allVisibleSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
+  const exitSelectionMode = () => { setSelectionMode(false); setSelectedIds(new Set()); };
+
   return (
     <section className="task-table-panel" onDragOver={(event) => { if (onDrop) event.preventDefault(); }} onDrop={(event) => { if (!onDrop) return; event.preventDefault(); const id = event.dataTransfer.getData("text/plain"); if (id) onDrop(id); }}>
-      <header className="task-table-head"><span className="task-table-icon"><Icon /></span><span><h2>{title}</h2><p>{note}</p></span><span className="task-table-count">{items.length}</span></header>
+      <header className="task-table-head">
+        <span className="task-table-icon"><Icon /></span>
+        <span><h2>{title}</h2><p>{note}</p></span>
+        <span className="task-table-count">{items.length}</span>
+        {onBulkSave && !!items.length && (
+          selectionMode ? (
+            <button type="button" className="task-table-select-toggle" onClick={exitSelectionMode}>Done selecting</button>
+          ) : (
+            <button type="button" className="task-table-select-toggle" onClick={() => setSelectionMode(true)}>Select</button>
+          )
+        )}
+      </header>
+      {selectionMode && (
+        <div className="task-table-select-all">
+          <label>
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={() => setSelectedIds(allVisibleSelected ? new Set() : new Set(items.map((item) => item.id)))}
+            />
+            Select all visible ({items.length})
+          </label>
+        </div>
+      )}
+      {onBulkSave && selectedIds.size > 0 && (
+        <BulkActionBar
+          count={selectedIds.size}
+          collections={collections}
+          onClear={() => setSelectedIds(new Set())}
+          onApply={(changes) => onBulkSave([...selectedIds], changes)}
+        />
+      )}
       <div className="task-table-columns" aria-hidden="true"><span>Task</span><span>{completed ? "Finished" : "Due"}</span><span>Attention</span><span>Priority</span><span /></div>
       <div className="task-table-body">
-        {items.map((item) => <TaskRow completed={completed} item={item} collections={collections} key={item.id} onDisbandGroup={onDisbandGroup} onMergeInto={onMergeInto} onOpen={onOpen} onSave={onSave} onUnlinkItem={onUnlinkItem} onDelete={onDelete} />)}
+        {items.map((item) => (
+          <TaskRow
+            completed={completed}
+            item={item}
+            collections={collections}
+            key={item.id}
+            onDisbandGroup={onDisbandGroup}
+            onMergeInto={onMergeInto}
+            onOpen={onOpen}
+            onSave={onSave}
+            onUnlinkItem={onUnlinkItem}
+            onDelete={onDelete}
+            selectable={selectionMode}
+            selected={selectedIds.has(item.id)}
+            onToggleSelect={toggleSelect}
+          />
+        ))}
         {!items.length && <div className="task-table-empty"><Check /><span>{empty}</span></div>}
       </div>
     </section>
@@ -684,7 +769,7 @@ const LIST_DRAG_TYPE = "application/x-burner-list-id";
 
 function CollectionsView({
   items, allItems, lists, visibility, onOpen, onSaveItem, onCreateList, onSaveList,
-  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem, onSaveVisibility,
+  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem, onSaveVisibility, onBulkSave,
 }: {
   items: BoardItem[];
   allItems: BoardItem[];
@@ -701,9 +786,22 @@ function CollectionsView({
   onDisbandGroup: (id: string) => void;
   onDeleteItem: (id: string) => void;
   onSaveVisibility: (changes: Partial<HomeVisibility>) => void;
+  onBulkSave: (ids: string[], changes: EditableChanges) => Promise<{ applied: number; failed: number }>;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  // Phase 2: selection is lifted here (not per-list local state) because renderList below is a
+  // plain closure invoked once per list inside .map() - it isn't its own component, so it can't
+  // hold hooks of its own. Only one list can be "in selection mode" at a time, which also keeps
+  // the UI simple: selecting across multiple lists at once isn't something this slice supports.
+  const [selectionListId, setSelectionListId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelect = (id: string) => setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const exitSelection = () => { setSelectionListId(null); setSelectedIds(new Set()); };
   const ordered = [...lists].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
   const names = lists.map(list => list.name);
   const moveList = (draggedId: string, target: BoardList) => {
@@ -726,6 +824,8 @@ function CollectionsView({
     const Icon = list.rule === "inbox" ? Inbox : collectionIcon(list.name);
     const index = siblings.findIndex(entry => entry.id === list.id);
     const showPriority = list.showPriority ?? typeDefaults.showPriority;
+    const isSelecting = selectionListId === list.id;
+    const allRowsSelected = rows.length > 0 && rows.every(row => selectedIds.has(row.id));
     return (
       <section
         key={list.id}
@@ -779,6 +879,13 @@ function CollectionsView({
           <button className={"list-pin " + (list.pinned ? "is-pinned" : "")} type="button"
             aria-label={(list.pinned ? "Unpin " : "Pin ") + list.name} aria-pressed={Boolean(list.pinned)}
             onClick={() => onSaveList(list.id, { pinned: !list.pinned })}><Pin /></button>
+          {!!rows.length && (
+            isSelecting ? (
+              <button type="button" className="list-select-toggle" onClick={exitSelection}>Done</button>
+            ) : (
+              <button type="button" className="list-select-toggle" onClick={() => { setSelectionListId(list.id); setSelectedIds(new Set()); }}>Select</button>
+            )
+          )}
           <ListManagePopover list={list} itemCount={assignedCount} hiddenCounts={{ goals: hiddenGoals, purchases: hiddenPurchases }} visibility={visibility} onSave={onSaveList} onDelete={onDeleteList}
             onMoveUp={index > 0 ? () => moveList(list.id, siblings[index - 1]) : undefined}
             onMoveDown={index < siblings.length - 1 ? () => moveList(list.id, siblings[index + 1]) : undefined} />
@@ -788,10 +895,28 @@ function CollectionsView({
             <span>{LIST_RULES.find(rule => rule.value === (list.rule || "manual"))?.note}</span>
             <span>{LIST_SORTS.find(sort => sort.value === (list.itemSort || "priority"))?.label}</span>
           </div>
+          {isSelecting && !!rows.length && (
+            <div className="task-table-select-all">
+              <label>
+                <input type="checkbox" checked={allRowsSelected} onChange={() => setSelectedIds(allRowsSelected ? new Set() : new Set(rows.map(row => row.id)))} />
+                Select all visible ({rows.length})
+              </label>
+            </div>
+          )}
+          {isSelecting && selectedIds.size > 0 && (
+            <BulkActionBar
+              count={selectedIds.size}
+              collections={names}
+              onClear={() => setSelectedIds(new Set())}
+              onApply={(changes) => onBulkSave([...selectedIds], changes)}
+            />
+          )}
           <div className="collection-table">
             {rows.map(item => <TaskRow key={item.id} item={item} collections={names}
               showPriority={showPriority} onOpen={onOpen} onSave={onSaveItem}
-              onMergeInto={onMergeInto} onUnlinkItem={onUnlinkItem} onDisbandGroup={onDisbandGroup} onDelete={onDeleteItem} />)}
+              onMergeInto={onMergeInto} onUnlinkItem={onUnlinkItem} onDisbandGroup={onDisbandGroup} onDelete={onDeleteItem}
+              selectable={isSelecting} selected={selectedIds.has(item.id)} onToggleSelect={toggleSelect}
+              mergeCandidates={rows.filter(candidate => candidate.id !== item.id)} />)}
             {!rows.length && <div className="subtable-empty">Drop a task here or choose this list from a task’s Move to list menu.</div>}
           </div>
         </>}
@@ -855,6 +980,12 @@ function EditorSheet({
   onOpenChange: (open: boolean) => void;
   onSave: (id: string, changes: EditableChanges) => Promise<unknown>;
 }) {
+  // Phase 2 (docs/plans/burner-board-roadmap.md): "Simplify the editor... reveal advanced
+  // fields on demand." Collapsed by default every time a different item is opened (this
+  // component remounts per item via its call site's key={selected?.id}), which is the
+  // intended behavior, not a bug - hiding a field never touches its underlying value either
+  // way, since React just doesn't render that section.
+  const [moreOpen, setMoreOpen] = useState(false);
   if (!item) return null;
 
   const save = (changes: EditableChanges) => onSave(item.id, changes);
@@ -921,62 +1052,12 @@ function EditorSheet({
                     </SelectContent>
                   </Select>
                 </div>
-                <div>
-                  <FieldLabel>Item type</FieldLabel>
-                  <Select value={item.itemType} onValueChange={(value) => void save({ itemType: value })}>
-                    <SelectTrigger className="field-control"><SelectValue /></SelectTrigger>
-                    <SelectContent>{ITEM_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </section>
-
-            <section className="editor-section">
-              <h3>Plan it</h3>
-              <div className="field-grid two">
                 <div><FieldLabel>Due</FieldLabel><input className="field-control" type="date" value={inputDate(item.due)} onChange={(event) => void save({ due: event.target.value || null })} /></div>
-                <div><FieldLabel>Scheduled</FieldLabel><input className="field-control" type="date" value={inputDate(item.scheduledFor)} onChange={(event) => void save({ scheduledFor: event.target.value || null })} /></div>
-                <div>
-                  <FieldLabel>Date rule</FieldLabel>
-                  <Select value={item.dateMode || (item.due ? "date_set" : "unspecified")} onValueChange={(value) => void save({ dateMode: value, ...(value === "no_date" ? { due: null, scheduledFor: null } : {}) })}>
-                    <SelectTrigger className="field-control"><SelectValue /></SelectTrigger>
-                    <SelectContent>{DATE_MODES.map((mode) => <SelectItem key={mode.value} value={mode.value}>{mode.label}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-                {(item.itemType === "Reminder" || item.itemType === "Event") && <>
-                  <div>
-                    <FieldLabel>Repeat</FieldLabel>
-                    <Select value={item.recurrence || "__none__"} onValueChange={(value) => void save({ recurrence: value === "__none__" ? null : value })}>
-                      <SelectTrigger className="field-control"><SelectValue /></SelectTrigger>
-                      <SelectContent><SelectItem value="__none__">Does not repeat</SelectItem>{RECURRENCES.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </div>
-                  <div><FieldLabel>Reminder time</FieldLabel><input className="field-control" type="time" value={item.reminderTime || ""} onChange={(event) => void save({ reminderTime: event.target.value || null })} /></div>
-                </>}
-              </div>
-              <FieldLabel>Energy</FieldLabel>
-              <Select value={item.energy || "__none__"} onValueChange={(value) => void save({ energy: value === "__none__" ? null : value })}>
-                <SelectTrigger className="field-control"><SelectValue placeholder="Choose energy" /></SelectTrigger>
-                <SelectContent><SelectItem value="__none__">Not set</SelectItem>{ENERGIES.map((energy) => <SelectItem key={energy} value={energy}>{energy}</SelectItem>)}</SelectContent>
-              </Select>
-              <FieldLabel>Context</FieldLabel>
-              <div className="context-chips">
-                {CONTEXTS.map((context) => <button key={context} type="button" className={contextValues.has(context) ? "selected" : ""} onClick={() => toggleContext(context)}>{context}</button>)}
               </div>
             </section>
 
             <section className="editor-section">
-              <h3>Connect it</h3>
-              <div className="field-grid">
-                <div><FieldLabel>Area</FieldLabel><RelationSelect value={item.area} options={relations.areas} placeholder="Choose area" onChange={(value) => void save({ area: value })} /></div>
-                <div><FieldLabel>Project</FieldLabel><RelationSelect value={item.project} options={relations.projects} placeholder="Choose project" onChange={(value) => void save({ project: value })} /></div>
-                <div><FieldLabel>Goal</FieldLabel><RelationSelect value={item.goal} options={relations.goals} placeholder="Choose goal" onChange={(value) => void save({ goal: value })} /></div>
-              </div>
-            </section>
-
-            <section className="editor-section">
-              <h3>Details</h3>
-              <FieldLabel>Notes</FieldLabel>
+              <h3>Notes</h3>
               <textarea
                 className="notes-editor"
                 defaultValue={item.originalNotes || ""}
@@ -990,9 +1071,65 @@ function EditorSheet({
               />
               <div className="editor-actions">
                 <button type="button" className="touch-button" onClick={() => void save({ lastInteraction: new Date().toISOString() })}><Sparkles />Mark active now</button>
-                <label className="star-toggle"><Switch checked={item.starred} onCheckedChange={(checked) => void save({ starred: checked })} /><span>Starred</span></label>
               </div>
             </section>
+
+            <Collapsible open={moreOpen} onOpenChange={setMoreOpen}>
+              <CollapsibleTrigger className="editor-more-toggle" type="button">
+                {moreOpen ? "Fewer fields" : "More fields"}<span>{moreOpen ? "−" : "+"}</span>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <section className="editor-section">
+                  <h3>Type &amp; schedule</h3>
+                  <div className="field-grid two">
+                    <div>
+                      <FieldLabel>Item type</FieldLabel>
+                      <Select value={item.itemType} onValueChange={(value) => void save({ itemType: value })}>
+                        <SelectTrigger className="field-control"><SelectValue /></SelectTrigger>
+                        <SelectContent>{ITEM_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div><FieldLabel>Scheduled</FieldLabel><input className="field-control" type="date" value={inputDate(item.scheduledFor)} onChange={(event) => void save({ scheduledFor: event.target.value || null })} /></div>
+                    <div>
+                      <FieldLabel>Date rule</FieldLabel>
+                      <Select value={item.dateMode || (item.due ? "date_set" : "unspecified")} onValueChange={(value) => void save({ dateMode: value, ...(value === "no_date" ? { due: null, scheduledFor: null } : {}) })}>
+                        <SelectTrigger className="field-control"><SelectValue /></SelectTrigger>
+                        <SelectContent>{DATE_MODES.map((mode) => <SelectItem key={mode.value} value={mode.value}>{mode.label}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    {(item.itemType === "Reminder" || item.itemType === "Event") && <>
+                      <div>
+                        <FieldLabel>Repeat</FieldLabel>
+                        <Select value={item.recurrence || "__none__"} onValueChange={(value) => void save({ recurrence: value === "__none__" ? null : value })}>
+                          <SelectTrigger className="field-control"><SelectValue /></SelectTrigger>
+                          <SelectContent><SelectItem value="__none__">Does not repeat</SelectItem>{RECURRENCES.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div><FieldLabel>Reminder time</FieldLabel><input className="field-control" type="time" value={item.reminderTime || ""} onChange={(event) => void save({ reminderTime: event.target.value || null })} /></div>
+                    </>}
+                  </div>
+                  <FieldLabel>Energy</FieldLabel>
+                  <Select value={item.energy || "__none__"} onValueChange={(value) => void save({ energy: value === "__none__" ? null : value })}>
+                    <SelectTrigger className="field-control"><SelectValue placeholder="Choose energy" /></SelectTrigger>
+                    <SelectContent><SelectItem value="__none__">Not set</SelectItem>{ENERGIES.map((energy) => <SelectItem key={energy} value={energy}>{energy}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <FieldLabel>Context</FieldLabel>
+                  <div className="context-chips">
+                    {CONTEXTS.map((context) => <button key={context} type="button" className={contextValues.has(context) ? "selected" : ""} onClick={() => toggleContext(context)}>{context}</button>)}
+                  </div>
+                </section>
+
+                <section className="editor-section">
+                  <h3>Connect it</h3>
+                  <div className="field-grid">
+                    <div><FieldLabel>Area</FieldLabel><RelationSelect value={item.area} options={relations.areas} placeholder="Choose area" onChange={(value) => void save({ area: value })} /></div>
+                    <div><FieldLabel>Project</FieldLabel><RelationSelect value={item.project} options={relations.projects} placeholder="Choose project" onChange={(value) => void save({ project: value })} /></div>
+                    <div><FieldLabel>Goal</FieldLabel><RelationSelect value={item.goal} options={relations.goals} placeholder="Choose goal" onChange={(value) => void save({ goal: value })} /></div>
+                  </div>
+                  <label className="star-toggle"><Switch checked={item.starred} onCheckedChange={(checked) => void save({ starred: checked })} /><span>Starred</span></label>
+                </section>
+              </CollapsibleContent>
+            </Collapsible>
 
             <div className="record-meta">
               <span>Attention {Math.round(item.attentionScore)}</span>
@@ -1228,6 +1365,21 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       await load();
       return false;
     }
+  };
+
+  // Phase 2: bulk actions. No batch API endpoint exists, so this calls the existing
+  // single-item update once per id, sequentially (not Promise.all) - saveItem does an
+  // optimistic local setData per call, and running many in parallel would interleave those
+  // updates unpredictably. Reports partial failure honestly instead of assuming all-or-nothing.
+  const bulkSave = async (ids: string[], changes: EditableChanges): Promise<{ applied: number; failed: number }> => {
+    let applied = 0;
+    let failed = 0;
+    for (const id of ids) {
+      if (await saveItem(id, changes)) applied++; else failed++;
+    }
+    if (failed === 0) toast.success(`Updated ${applied} task${applied === 1 ? "" : "s"}.`);
+    else toast.warning(`Updated ${applied} of ${applied + failed}. ${failed} failed - try again for those.`);
+    return { applied, failed };
   };
 
   const create = async () => {
@@ -1542,7 +1694,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           {!data.lists.some(list => list.rule === "inbox") && filtered.some(item => !item.collection && item.itemType !== "Event") && (
             <TaskTable title="Unfiled tasks" note="These tasks have no list. Move them into a list, or set any list’s Tasks shown setting to Unfiled tasks."
               items={filtered.filter(item => !item.collection && item.itemType !== "Event")} icon={Inbox} empty="No unfiled tasks"
-              collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} />
+              collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} onBulkSave={bulkSave} />
           )}
           <CollectionsView
             items={filtered.filter(item => item.itemType !== "Event")}
@@ -1560,6 +1712,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onUnlinkItem={(id) => void unlinkItem(id)}
             onDisbandGroup={(id) => void disbandGroup(id)}
             onDeleteItem={(id) => void deleteItem(id)}
+            onBulkSave={bulkSave}
           />
           {!widgetTop && <UpcomingWidget items={openItems} position="bottom" onOpen={(item) => setSelectedId(item.id)} onMove={() => setWidgetTop(true)} />}
         </section>
@@ -1576,6 +1729,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             icon={CalendarDays}
             items={filtered.filter(item => item.itemType === "Event").sort((a, b) => (plannedDate(a) || "9999").localeCompare(plannedDate(b) || "9999"))}
             note="Sorted by date. Repeat rules keep these off your task lists."
+            onBulkSave={bulkSave}
             onOpen={(item) => setSelectedId(item.id)}
             onSave={(id, changes) => void saveItem(id, changes)}
             onDelete={(id) => void deleteItem(id)}
@@ -1595,6 +1749,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             icon={Target}
             items={filtered.filter(item => item.itemType === "Goal").sort((a, b) => compareListItems(a, b, "priority", effectiveAttention))}
             note="Shown here no matter which lists hide goals."
+            onBulkSave={bulkSave}
             onOpen={(item) => setSelectedId(item.id)}
             onSave={(id, changes) => void saveItem(id, changes)}
             onDelete={(id) => void deleteItem(id)}
@@ -1610,6 +1765,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             icon={BellRing}
             items={dashboard.reminders}
             note="Edit the date, time, and repeat rule without leaving this list."
+            onBulkSave={bulkSave}
             onDrop={(id) => void saveItem(id, { itemType: "Reminder", priority: 0 })}
             onOpen={(item) => setSelectedId(item.id)}
             onSave={(id, changes) => void saveItem(id, changes)}
@@ -1627,6 +1783,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <HistoryView
             items={data.items}
             collections={data.collections}
+            onBulkSave={bulkSave}
             onOpen={(item) => setSelectedId(item.id)}
             onSave={(id, changes) => void saveItem(id, changes)}
             onDelete={(id) => void deleteItem(id)}
