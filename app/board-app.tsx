@@ -32,7 +32,6 @@ import {
   Trash2,
   Trophy,
   Ungroup,
-  Unplug,
   WalletCards,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -89,7 +88,7 @@ async function boardRequest(body?: unknown) {
   } : undefined);
   const payload = await response.json() as BoardPayload & {
     item: BoardItem; list: BoardList; reassignedCount: number; pulled: number; error?: string;
-    sync?: { notion: boolean | null; todoist: boolean | null; message?: string };
+    sync?: { notion: boolean | null; message?: string };
   };
   if (!response.ok) throw new Error(payload.error || "The board could not finish that change.");
   return payload;
@@ -404,7 +403,7 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
         <GripVertical className="dashboard-drag" aria-hidden="true" />
         <button className="dashboard-title" onClick={() => isGroup ? setExpanded((open) => !open) : onOpen(item)} type="button">
           <strong>{item.title}{isGroup && <em className="group-badge"><ChevronRight className={expanded ? "group-chevron open" : "group-chevron"} />{members!.length} tasks</em>}</strong>
-          <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}{item.showInTodoist && <em className="todoist-mark">T</em>}</span>
+          <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}</span>
         </button>
         <span className={date?.includes("overdue") ? "dashboard-due overdue" : "dashboard-due"}>{date || "—"}</span>
         <span className="heat-score" title={`Combined urgency ${Math.round(attentionHeat(item))}`}><i />{attention}</span>
@@ -844,21 +843,16 @@ function EditorSheet({
   open,
   relations,
   collections,
-  connections,
   onOpenChange,
   onSave,
-  onNeedConnection,
 }: {
   item: BoardItem | null;
   open: boolean;
   relations: BoardPayload["relations"];
   collections: string[];
-  connections: BoardPayload["connections"];
   onOpenChange: (open: boolean) => void;
   onSave: (id: string, changes: EditableChanges) => Promise<unknown>;
-  onNeedConnection: () => void;
 }) {
-  const [removeTodoist, setRemoveTodoist] = useState(false);
   if (!item) return null;
 
   const save = (changes: EditableChanges) => onSave(item.id, changes);
@@ -870,21 +864,8 @@ function EditorSheet({
     else next.add(value);
     void save({ context: [...next].join(", ") || null });
   };
-  const toggleTodoist = (checked: boolean) => {
-    if (checked && !connections.todoist) {
-      onNeedConnection();
-      toast.info("Connect Todoist first. Your task has not been copied yet.");
-      return;
-    }
-    if (!checked && item.todoistId) {
-      setRemoveTodoist(true);
-      return;
-    }
-    void save({ showInTodoist: checked });
-  };
 
   return (
-    <>
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent className="editor-sheet sm:max-w-xl" side="right">
           <SheetHeader className="editor-header">
@@ -903,12 +884,6 @@ function EditorSheet({
           </SheetHeader>
 
           <div className="editor-scroll">
-            <div className="switch-row todoist-switch">
-              <span><strong>Show in Todoist</strong><small>Today items turn this on automatically.</small></span>
-              <Switch checked={item.showInTodoist} onCheckedChange={toggleTodoist} aria-label="Show in Todoist" />
-            </div>
-            {!connections.todoist && <button className="connection-nudge" type="button" onClick={onNeedConnection}><Unplug />Connect Todoist to use this switch</button>}
-
             {usesPriority(item.itemType) && <section className="editor-section priority-editor">
               <h3>Importance</h3>
               <PriorityControl
@@ -1021,24 +996,10 @@ function EditorSheet({
               <span>Attention {Math.round(item.attentionScore)}</span>
               <span>{Math.round(item.stalenessDays)} days stale</span>
               {item.lastInteraction && <span>Last active {new Date(item.lastInteraction).toLocaleString()}</span>}
-              {item.todoistId && <a href={`https://app.todoist.com/app/task/${item.todoistId}`} target="_blank" rel="noreferrer">Open in Todoist <ExternalLink /></a>}
             </div>
           </div>
         </SheetContent>
       </Sheet>
-      <AlertDialog open={removeTodoist} onOpenChange={setRemoveTodoist}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove this task from Todoist?</AlertDialogTitle>
-            <AlertDialogDescription>The Notion item and Burner Board copy stay intact. Only the Todoist task is deleted.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep it</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={() => void save({ showInTodoist: false })}>Remove from Todoist</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
   );
 }
 
@@ -1056,16 +1017,14 @@ function ConnectionsSheet({
   onExport: () => void;
 }) {
   const [notionToken, setNotionToken] = useState("");
-  const [todoistToken, setTodoistToken] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
-  const connect = async (provider: "notion" | "todoist", token: string) => {
+  const connect = async (provider: "notion", token: string) => {
     setBusy(provider);
     try {
       await boardRequest({ action: "connect", provider, token });
-      if (provider === "notion") setNotionToken("");
-      else setTodoistToken("");
-      toast.success(`${provider === "notion" ? "Notion" : "Todoist"} connected.`);
+      setNotionToken("");
+      toast.success("Notion connected.");
       await onRefresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Connection failed.");
@@ -1074,7 +1033,7 @@ function ConnectionsSheet({
     }
   };
 
-  const disconnect = async (provider: "notion" | "todoist") => {
+  const disconnect = async (provider: "notion") => {
     setBusy(provider);
     try {
       await boardRequest({ action: "disconnect", provider });
@@ -1134,24 +1093,6 @@ function ConnectionsSheet({
                 <a href="https://www.notion.so/profile/integrations" target="_blank" rel="noreferrer">Open Notion integrations <ExternalLink /></a>
                 <input type="password" value={notionToken} onChange={(event) => setNotionToken(event.target.value)} placeholder="ntn_..." autoComplete="off" />
                 <Button onClick={() => void connect("notion", notionToken)} disabled={!notionToken || busy === "notion"}>{busy === "notion" && <Loader2 className="animate-spin" />}Connect Notion</Button>
-              </div>
-            )}
-          </section>
-
-          <section className="connection-card">
-            <div className="connection-heading">
-              <span className="todoist-letter">T</span>
-              <span><strong>Todoist</strong><small>{data.connections.todoist ? "Ready for selected tasks" : "Nothing will be copied yet"}</small></span>
-              <span className={data.connections.todoist ? "status-live" : "status-off"}>{data.connections.todoist ? "Live" : "Off"}</span>
-            </div>
-            {data.connections.todoist ? (
-              <div className="connection-actions"><Button variant="outline" onClick={() => void disconnect("todoist")} disabled={busy === "todoist"}>Disconnect</Button></div>
-            ) : (
-              <div className="token-form">
-                <p>Use your personal API token. Burner Board only creates tasks you mark &quot;Show in Todoist.&quot;</p>
-                <a href="https://app.todoist.com/app/settings/integrations/developer" target="_blank" rel="noreferrer">Open Todoist developer settings <ExternalLink /></a>
-                <input type="password" value={todoistToken} onChange={(event) => setTodoistToken(event.target.value)} placeholder="Todoist API token" autoComplete="off" />
-                <Button onClick={() => void connect("todoist", todoistToken)} disabled={!todoistToken || busy === "todoist"}>{busy === "todoist" && <Loader2 className="animate-spin" />}Connect Todoist</Button>
               </div>
             )}
           </section>
@@ -1229,7 +1170,6 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       if (view === "active" && ["Done", "Archived"].includes(item.status)) return false;
       if (view === "unrated" && (["Done", "Archived"].includes(item.status) || !needsPriority(item))) return false;
       if (view === "no_due" && (["Done", "Archived"].includes(item.status) || item.priority === 0 || item.due || item.scheduledFor)) return false;
-      if (view === "todoist" && !item.showInTodoist) return false;
       if (view === "starred" && !item.starred) return false;
       if (view === "due" && !item.due) return false;
       if (view === "done" && !["Done", "Archived"].includes(item.status)) return false;
@@ -1478,7 +1418,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
   const exportCsv = () => {
     if (!data) return;
-    const keys: Array<keyof BoardItem> = ["title", "status", "collection", "priority", "itemType", "source", "due", "scheduledFor", "dateMode", "recurrence", "reminderTime", "energy", "context", "area", "project", "goal", "originalNotes", "lastInteraction", "completedAt", "starred", "showInTodoist", "todoistId", "id"];
+    const keys: Array<keyof BoardItem> = ["title", "status", "collection", "priority", "itemType", "source", "due", "scheduledFor", "dateMode", "recurrence", "reminderTime", "energy", "context", "area", "project", "goal", "originalNotes", "lastInteraction", "completedAt", "starred", "id"];
     const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
     const csv = [keys.join(","), ...data.items.map((item) => keys.map((key) => quote(item[key])).join(","))].join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -1525,7 +1465,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             </button>
           ))}
           <button type="button" className="front-stat" onClick={() => { setMode("reminders"); setView("active"); }}><span>{stats.reminders}</span>Reminders</button>
-          <button type="button" className="todoist-stat" onClick={() => { setMode("completed"); setView("all"); }}><span>{stats.completed}</span>Finished</button>
+          <button type="button" className="finished-stat" onClick={() => { setMode("completed"); setView("all"); }}><span>{stats.completed}</span>Finished</button>
         </div>
       </section>}
 
@@ -1564,7 +1504,6 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             <SelectItem value="active">Open items</SelectItem>
             <SelectItem value="unrated">Inbox</SelectItem>
             <SelectItem value="no_due">No due date</SelectItem>
-            <SelectItem value="todoist">In Todoist</SelectItem>
             <SelectItem value="starred">Starred</SelectItem>
             <SelectItem value="due">Has due date</SelectItem>
             <SelectItem value="done">Done and archived</SelectItem>
@@ -1702,10 +1641,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
       <EditorSheet
         collections={data.collections}
-        connections={data.connections}
         item={selected}
         key={selected?.id || "none"}
-        onNeedConnection={() => demo ? toast.info("Exit the sample board to manage connections.") : setSettingsOpen(true)}
         onOpenChange={(open) => { if (!open) setSelectedId(null); }}
         onSave={saveItem}
         open={Boolean(selectedId)}

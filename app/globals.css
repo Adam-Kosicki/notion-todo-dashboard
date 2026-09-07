@@ -248,7 +248,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 }
 .stat-strip .needs-sort span { color: #f2bd51; }
 .stat-strip .front-stat span { color: #ff6c4c; }
-.stat-strip .todoist-stat span { color: #70b2ff; }
+.stat-strip .finished-stat span { color: #70b2ff; }
 
 .filterbar {
   display: flex;
@@ -542,7 +542,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
   gap: 5px;
 }
 .dashboard-title .source-dot { display: inline-block; }
-.dashboard-title .todoist-mark { display: inline-grid; width: 13px; height: 13px; margin-left: 2px; font-style: normal; }
 .dashboard-due {
   overflow: hidden;
   color: #8f9ba8;
@@ -979,19 +978,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 .source-todoist { background: #ff5b52; }
 .source-board { background: #ff7a55; }
 .source-google { background: #5ca9ff; }
-.todoist-mark {
-  display: grid;
-  width: 14px;
-  height: 14px;
-  margin-left: auto;
-  place-items: center;
-  border-radius: 4px;
-  background: #e64a42;
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 900;
-}
 .starred { width: 11px; color: #f5c451; }
 .pending-mark { margin-left: auto; color: #c89b45; }
 .score-badge, .row-score {
@@ -1627,24 +1613,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 .switch-row > span { display: flex; flex-direction: column; }
 .switch-row strong { font-size: 13px; }
 .switch-row small { margin-top: 4px; color: #7e8b99; font-size: 10px; }
-.todoist-switch {
-  border-color: rgba(237, 79, 69, 0.3);
-  background: linear-gradient(100deg, rgba(237, 79, 69, 0.08), #161e28 48%);
-}
-.connection-nudge {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  margin-top: 7px;
-  padding: 9px 11px;
-  cursor: pointer;
-  border: 0;
-  background: transparent;
-  color: #e6a643;
-  font-size: 11px;
-  gap: 7px;
-}
-.connection-nudge svg { width: 13px; }
 .editor-section { padding: 22px 0; border-bottom: 1px solid #25303c; }
 .editor-section h3 {
   margin: 0 0 16px;
@@ -1800,7 +1768,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
   background: #161e28;
 }
 .connection-heading { display: grid; grid-template-columns: 38px 1fr auto; gap: 10px; }
-.notion-letter, .todoist-letter {
+.notion-letter {
   display: grid;
   width: 38px;
   height: 38px;
@@ -1812,7 +1780,6 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
   font-size: 20px;
   font-weight: 900;
 }
-.todoist-letter { background: #e94f45; color: #fff; font-family: var(--font-sans); }
 .connection-heading strong { font-size: 13px; }
 .status-live, .status-off {
   padding: 4px 7px;

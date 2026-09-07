@@ -33,8 +33,6 @@ export const items = sqliteTable(
     attentionScore: real("attention_score").notNull().default(0),
     stalenessDays: real("staleness_days").notNull().default(0),
     starred: integer("starred", { mode: "boolean" }).notNull().default(false),
-    todoistId: text("todoist_id"),
-    showInTodoist: integer("show_in_todoist", { mode: "boolean" }).notNull().default(false),
     dirty: integer("dirty", { mode: "boolean" }).notNull().default(false),
     rawJson: text("raw_json").notNull().default("{}"),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

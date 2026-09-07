@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Burner Board",
-  description: "A private task triage desk for Notion and Todoist.",
+  description: "A private task triage desk for Notion.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

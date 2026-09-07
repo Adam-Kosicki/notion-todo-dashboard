@@ -50,7 +50,7 @@ export function belongsToList(item: BoardItem, list: BoardList, lists: BoardList
 export function listMoveChanges(list: BoardList, now = new Date()): EditableChanges {
   const changes: EditableChanges = { collection: list.name };
   const { today, weekEnd, nextWeek } = listCalendar(now);
-  if (list.rule === "today") { changes.scheduledFor = today; changes.showInTodoist = true; }
+  if (list.rule === "today") changes.scheduledFor = today;
   if (list.rule === "week") changes.scheduledFor = weekEnd;
   if (list.rule === "longer") changes.scheduledFor = nextWeek;
   // Due dates describe commitments; moving a task never silently erases them.

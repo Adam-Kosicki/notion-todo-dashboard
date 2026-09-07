@@ -49,7 +49,7 @@ export async function POST(request: Request) {
       type?: string;
       changes?: EditableChanges;
       listChanges?: EditableList;
-      provider?: "notion" | "todoist";
+      provider?: "notion";
       token?: string;
       targetId?: string;
       orderedIds?: string[];

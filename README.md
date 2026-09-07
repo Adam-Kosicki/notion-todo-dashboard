@@ -1,6 +1,6 @@
 # Burner Board
 
-A private task planning interface for a Notion database. The board keeps the full Notion record available while making daily sorting, quick editing, completion tracking, reminders, and selective Todoist handoff much faster.
+A private task planning interface for a Notion database. The board keeps the full Notion record available while making daily sorting, quick editing, completion tracking, and reminders much faster.
 
 The product rules and integration plan live in [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).
 

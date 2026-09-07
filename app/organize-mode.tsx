@@ -40,7 +40,7 @@ export default function OrganizeMode({ items, lists, onSave, onHome }: Props) {
     const restore: EditableChanges = {};
     for (const key of Object.keys(last.applied) as Array<keyof EditableChanges>) Object.assign(restore, { [key]: last.item[key] });
     // Restore fields the backend may derive from a list/type/date change as well.
-    Object.assign(restore, { itemType: last.item.itemType, priority: last.item.priority, dateMode: last.item.dateMode, showInTodoist: last.item.showInTodoist });
+    Object.assign(restore, { itemType: last.item.itemType, priority: last.item.priority, dateMode: last.item.dateMode });
     try {
       if (await onSave(last.item.id, restore)) {
         setHistory(previous => previous.slice(0, -1));

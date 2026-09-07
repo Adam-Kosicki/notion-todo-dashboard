@@ -33,7 +33,6 @@ const COLUMN_MAP: Record<string, string> = {
   lastInteraction: "last_interaction",
   completedAt: "completed_at",
   starred: "starred",
-  showInTodoist: "show_in_todoist",
 };
 
 type RuntimeEnv = {
@@ -128,8 +127,8 @@ function nullable(value: unknown) {
 const ITEM_COLUMNS = [
   "owner_id", "id", "title", "status", "burner", "priority", "priority_level", "item_type",
   "source", "collection", "due", "scheduled_for", "date_mode", "recurrence", "reminder_time", "energy", "context", "area", "project", "goal", "original_notes", "tags",
-  "last_interaction", "last_nudge", "completed_at", "attention_score", "staleness_days", "starred", "todoist_id",
-  "show_in_todoist", "dirty", "raw_json",
+  "last_interaction", "last_nudge", "completed_at", "attention_score", "staleness_days", "starred",
+  "dirty", "raw_json",
 ];
 
 function itemValues(ownerId: string, item: StoredItem) {
@@ -162,8 +161,6 @@ function itemValues(ownerId: string, item: StoredItem) {
     Number(item.attentionScore || 0),
     Number(item.stalenessDays || 0),
     bool(item.starred) ? 1 : 0,
-    nullable(item.todoistId),
-    bool(item.showInTodoist) ? 1 : 0,
     0,
     JSON.stringify(item),
   ];
@@ -296,8 +293,6 @@ function rowToItem(row: any): BoardItem {
     attentionScore: Number(row.attention_score || 0),
     stalenessDays: Number(row.staleness_days || 0),
     starred: bool(row.starred),
-    todoistId: row.todoist_id,
-    showInTodoist: bool(row.show_in_todoist),
     dirty: bool(row.dirty),
     updatedAt: row.updated_at,
   };
@@ -594,27 +589,14 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
   const result = await db.prepare(
     "SELECT * FROM items WHERE owner_id = ? ORDER BY CASE status WHEN 'In progress' THEN 0 WHEN 'Not started' THEN 1 ELSE 2 END, COALESCE(priority, -1) DESC, attention_score DESC, title COLLATE NOCASE",
   ).bind(ownerId).all();
-  let items = (result.results || []).map(rowToItem);
+  const items = (result.results || []).map(rowToItem);
   const connections = await db.prepare("SELECT provider FROM integrations WHERE owner_id = ?").bind(ownerId).all();
   const providers = new Set((connections.results || []).map((row: any) => row.provider));
   const notionManaged = Boolean(managedNotionToken());
-  const todayQueue = items.filter((item) => belongsInToday(item) && !item.showInTodoist);
-  if (todayQueue.length) {
-    await db.batch(todayQueue.map((item) => db.prepare(
-      "UPDATE items SET show_in_todoist = 1, dirty = 1 WHERE owner_id = ? AND id = ?",
-    ).bind(ownerId, item.id)));
-  }
-  if (providers.has("todoist")) await syncTodoistQueue(ownerId);
-  if (todayQueue.length || providers.has("todoist")) {
-    const refreshed = await db.prepare(
-      "SELECT * FROM items WHERE owner_id = ? ORDER BY CASE status WHEN 'In progress' THEN 0 WHEN 'Not started' THEN 1 ELSE 2 END, COALESCE(priority, -1) DESC, attention_score DESC, title COLLATE NOCASE",
-    ).bind(ownerId).all();
-    items = (refreshed.results || []).map(rowToItem);
-  }
   const boardLists = await listLists(ownerId);
   return {
     items,
-    connections: { notion: notionManaged || providers.has("notion"), notionManaged, todoist: providers.has("todoist") },
+    connections: { notion: notionManaged || providers.has("notion"), notionManaged },
     relations: {
       areas: collectRelations(items, "area"),
       projects: collectRelations(items, "project"),
@@ -627,14 +609,12 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
   };
 }
 
-async function getIntegration(ownerId: string, provider: "notion" | "todoist") {
-  if (provider === "notion") {
-    const token = managedNotionToken();
-    if (token) return token;
-  }
+async function getIntegration(ownerId: string) {
+  const token = managedNotionToken();
+  if (token) return token;
   const row = await runtime().DB.prepare(
-    "SELECT ciphertext, iv FROM integrations WHERE owner_id = ? AND provider = ?",
-  ).bind(ownerId, provider).first() as StoredIntegration | null;
+    "SELECT ciphertext, iv FROM integrations WHERE owner_id = ? AND provider = 'notion'",
+  ).bind(ownerId).first() as StoredIntegration | null;
   return row ? decryptToken(row) : null;
 }
 
@@ -655,36 +635,19 @@ async function notionRequest(token: string, path: string, init: RequestInit = {}
   return response.status === 204 ? null : response.json();
 }
 
-async function todoistRequest(token: string, path: string, init: RequestInit = {}) {
-  const response = await fetch(`https://api.todoist.com/api/v1${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init.headers || {}) },
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { error?: string; message?: string };
-    throw new Error(payload.message || payload.error || `Todoist returned ${response.status}`);
-  }
-  return response.status === 204 ? null : response.json();
-}
-
-export async function connectProvider(ownerId: string, provider: "notion" | "todoist", token: string) {
+export async function connectProvider(ownerId: string, provider: "notion", token: string) {
   const cleanToken = token.trim();
   if (!cleanToken) throw new Error("Paste a token first.");
-  if (provider === "notion") {
-    await notionRequest(cleanToken, `/data_sources/${notionDataSources().items}`);
-  } else {
-    await todoistRequest(cleanToken, "/tasks?limit=1");
-  }
+  await notionRequest(cleanToken, `/data_sources/${notionDataSources().items}`);
   const encrypted = await encryptToken(cleanToken);
   await runtime().DB.prepare(
     "INSERT INTO integrations (owner_id, provider, ciphertext, iv) VALUES (?, ?, ?, ?) ON CONFLICT(owner_id, provider) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, connected_at = CURRENT_TIMESTAMP",
   ).bind(ownerId, provider, encrypted.ciphertext, encrypted.iv).run();
-  if (provider === "todoist") await syncTodoistQueue(ownerId);
   return { provider, connected: true };
 }
 
-export async function disconnectProvider(ownerId: string, provider: "notion" | "todoist") {
-  if (provider === "notion" && managedNotionToken()) {
+export async function disconnectProvider(ownerId: string, provider: "notion") {
+  if (managedNotionToken()) {
     throw new Error("This Notion connection is managed by the Site configuration.");
   }
   await runtime().DB.prepare("DELETE FROM integrations WHERE owner_id = ? AND provider = ?").bind(ownerId, provider).run();
@@ -750,7 +713,6 @@ function notionProperties(changes: EditableChanges) {
   if ("tags" in changes) properties.Tags = { multi_select: (changes.tags || "").split(",").map((name) => name.trim()).filter(Boolean).map((name) => ({ name })) };
   if ("originalNotes" in changes) properties["Original Notes"] = { rich_text: richText(changes.originalNotes) };
   if ("starred" in changes) properties.Starred = { checkbox: Boolean(changes.starred) };
-  if ("showInTodoist" in changes) properties["Show in Todoist"] = { checkbox: Boolean(changes.showInTodoist) };
   if ("collection" in changes) properties["Legacy List"] = { select: changes.collection ? { name: changes.collection } : null };
   for (const [key, notionKey] of [["area", "Area"], ["project", "Project"], ["goal", "Goal"]] as const) {
     if (key in changes) {
@@ -759,32 +721,6 @@ function notionProperties(changes: EditableChanges) {
     }
   }
   return properties;
-}
-
-function todoistPriority(priority: number | null) {
-  if (priority !== null && priority >= 8) return 1;
-  if (priority !== null && priority >= 5) return 2;
-  if (priority !== null && priority >= 2) return 3;
-  return 4;
-}
-
-function dateKey(value: string | null) {
-  if (!value) return null;
-  const direct = value.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
-  if (direct) return direct;
-  const parsed = new Date(value.replace(/\s+\([A-Z]{2,5}\)$/, ""));
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
-}
-
-function belongsInToday(item: BoardItem) {
-  if (["Done", "Archived"].includes(item.status)) return false;
-  const today = new Date().toISOString().slice(0, 10);
-  const planned = dateKey(item.scheduledFor) || dateKey(item.due);
-  return Boolean(planned && planned <= today);
-}
-
-function todoistDue(item: BoardItem) {
-  return dateKey(item.due) || dateKey(item.scheduledFor) || null;
 }
 
 async function patchNotionItem(token: string, item: BoardItem, changes: EditableChanges) {
@@ -804,61 +740,6 @@ async function patchNotionItem(token: string, item: BoardItem, changes: Editable
     }
   }
   await notionRequest(token, `/pages/${item.id}`, { method: "PATCH", body: JSON.stringify(body) });
-}
-
-async function createTodoistTask(token: string, item: BoardItem) {
-  const due = todoistDue(item);
-  return todoistRequest(token, "/tasks", {
-    method: "POST",
-    body: JSON.stringify({
-      content: item.title,
-      description: item.originalNotes || "Managed from Burner Board",
-      priority: todoistPriority(item.priority),
-      ...(due ? { due_date: due } : {}),
-      labels: ["burner-board"],
-    }),
-  }) as Promise<{ id: string }>;
-}
-
-async function updateTodoistTask(token: string, item: BoardItem) {
-  if (!item.todoistId) return;
-  const body: Record<string, unknown> = {
-    content: item.title,
-    description: item.originalNotes || "Managed from Burner Board",
-    priority: todoistPriority(item.priority),
-  };
-  body.due_date = todoistDue(item);
-  await todoistRequest(token, `/tasks/${item.todoistId}`, { method: "POST", body: JSON.stringify(body) });
-  if (item.status === "Done") await todoistRequest(token, `/tasks/${item.todoistId}/close`, { method: "POST" });
-}
-
-async function syncTodoistQueue(ownerId: string) {
-  const token = await getIntegration(ownerId, "todoist");
-  if (!token) return;
-  const result = await runtime().DB.prepare(
-    "SELECT * FROM items WHERE owner_id = ? AND show_in_todoist = 1 AND todoist_id IS NULL AND status NOT IN ('Done', 'Archived') LIMIT 100",
-  ).bind(ownerId).all();
-  const notionToken = await getIntegration(ownerId, "notion");
-  for (const row of result.results || []) {
-    const item = rowToItem(row);
-    try {
-      const created = await createTodoistTask(token, item);
-      await runtime().DB.prepare(
-        "UPDATE items SET todoist_id = ?, dirty = CASE WHEN ? IS NULL THEN dirty ELSE 0 END WHERE owner_id = ? AND id = ?",
-      ).bind(created.id, notionToken ? 1 : null, ownerId, item.id).run();
-      if (notionToken && !item.id.startsWith("local_")) {
-        await notionRequest(notionToken, `/pages/${item.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ properties: {
-            "Show in Todoist": { checkbox: true },
-            "Todoist ID": { rich_text: richText(created.id) },
-          } }),
-        });
-      }
-    } catch {
-      // Keep the item queued. A later load or manual edit retries it.
-    }
-  }
 }
 
 async function findItem(ownerId: string, id: string) {
@@ -972,7 +853,7 @@ export async function deleteItem(ownerId: string, id: string) {
     const result = await unlinkFromGroup(ownerId, id);
     affected.push(...result.items.filter((entry) => entry.id !== id));
   }
-  // Best-effort: trash the Notion page and drop the Todoist task, same as archiving.
+  // Best-effort: trash the Notion page, same as archiving.
   // A sync failure here should never block the local delete the user asked for.
   try {
     await updateItem(ownerId, id, { status: "Archived" });
@@ -991,7 +872,6 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
 
   if (normalizedChanges.status === "Done" && before.status !== "Done") normalizedChanges.completedAt = now;
   if ("status" in normalizedChanges && normalizedChanges.status !== "Done" && before.completedAt) normalizedChanges.completedAt = null;
-  if (normalizedChanges.status === "Archived") normalizedChanges.showInTodoist = false;
 
   // A list's default item type is a soft pre-fill: it only applies when an item is being
   // newly assigned to that list (collection changing) and nothing already set itemType in
@@ -1017,9 +897,6 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
     normalizedChanges.burner = burnerForPriority(normalizedChanges.priority);
   }
 
-  const planned = { ...before, ...normalizedChanges } as BoardItem;
-  if (!before.showInTodoist && belongsInToday(planned)) normalizedChanges.showInTodoist = true;
-
   const entries = Object.entries(normalizedChanges).filter(([key]) => COLUMN_MAP[key]);
   const sets = entries.map(([key]) => `${COLUMN_MAP[key]} = ?`);
   const values = entries.map(([, value]) => typeof value === "boolean" ? (value ? 1 : 0) : nullable(value));
@@ -1028,8 +905,8 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
   ).bind(...values, ownerId, id).run();
 
   let item = await findItem(ownerId, id);
-  const sync: { notion: boolean | null; todoist: boolean | null; message?: string } = { notion: null, todoist: null };
-  const notionToken = await getIntegration(ownerId, "notion");
+  const sync: { notion: boolean | null; message?: string } = { notion: null };
+  const notionToken = await getIntegration(ownerId);
   if (notionToken) {
     try {
       await patchNotionItem(notionToken, item, normalizedChanges);
@@ -1040,31 +917,6 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
       sync.message = error instanceof Error ? error.message : "Notion sync failed.";
     }
   }
-
-  const todoistToken = await getIntegration(ownerId, "todoist");
-  if (normalizedChanges.status === "Archived" && todoistToken && item.todoistId) {
-    await todoistRequest(todoistToken, `/tasks/${item.todoistId}`, { method: "DELETE" });
-    await runtime().DB.prepare("UPDATE items SET todoist_id = NULL WHERE owner_id = ? AND id = ?").bind(ownerId, id).run();
-    sync.todoist = true;
-  } else if ("showInTodoist" in normalizedChanges) {
-    if (!todoistToken && normalizedChanges.showInTodoist) {
-      sync.todoist = false;
-      sync.message = "Connect Todoist to add this task there.";
-    } else if (todoistToken && normalizedChanges.showInTodoist && !item.todoistId) {
-      const created = await createTodoistTask(todoistToken, item);
-      await runtime().DB.prepare("UPDATE items SET todoist_id = ? WHERE owner_id = ? AND id = ?").bind(created.id, ownerId, id).run();
-      item = await findItem(ownerId, id);
-      if (notionToken) await notionRequest(notionToken, `/pages/${item.id}`, { method: "PATCH", body: JSON.stringify({ properties: { "Todoist ID": { rich_text: richText(created.id) } } }) });
-      sync.todoist = true;
-    } else if (todoistToken && normalizedChanges.showInTodoist === false && item.todoistId) {
-      await todoistRequest(todoistToken, `/tasks/${item.todoistId}`, { method: "DELETE" });
-      await runtime().DB.prepare("UPDATE items SET todoist_id = NULL WHERE owner_id = ? AND id = ?").bind(ownerId, id).run();
-      sync.todoist = true;
-    }
-  } else if (todoistToken && item.todoistId) {
-    await updateTodoistTask(todoistToken, item);
-    sync.todoist = true;
-  }
   item = await findItem(ownerId, id);
   return { item, sync };
 }
@@ -1073,7 +925,7 @@ export async function createItem(ownerId: string, title: string) {
   const cleanTitle = title.trim();
   if (!cleanTitle) throw new Error("Type a task first.");
   const now = new Date().toISOString();
-  const notionToken = await getIntegration(ownerId, "notion");
+  const notionToken = await getIntegration(ownerId);
   let id = `local_${crypto.randomUUID()}`;
   let dirty = 1;
   if (notionToken) {
@@ -1141,7 +993,7 @@ async function relationNames(token: string, id: string, titleProperty: string) {
 }
 
 export async function syncNotion(ownerId: string) {
-  const token = await getIntegration(ownerId, "notion");
+  const token = await getIntegration(ownerId);
   if (!token) throw new Error("Connect Notion first.");
   const dataSources = notionDataSources();
   const [pages, areas, projects, goals] = await Promise.all([
@@ -1186,8 +1038,6 @@ export async function syncNotion(ownerId: string) {
       attentionScore: Number(propertyText(p["Attention Score"]) || 0),
       stalenessDays: Number(propertyText(p["Staleness (days)"]) || 0),
       starred: Boolean(propertyText(p.Starred)),
-      todoistId: propertyText(p["Todoist ID"]),
-      showInTodoist: Boolean(propertyText(p["Show in Todoist"])),
     };
     item.priority = importedPriority({
       priority: item.priority,
@@ -1199,7 +1049,7 @@ export async function syncNotion(ownerId: string) {
     const values = itemValues(ownerId, item as unknown as StoredItem);
     const placeholders = ITEM_COLUMNS.map(() => "?").join(", ");
     return db.prepare(
-      `INSERT INTO items (${ITEM_COLUMNS.join(", ")}) VALUES (${placeholders}) ON CONFLICT(owner_id, id) DO UPDATE SET title=excluded.title, status=excluded.status, burner=excluded.burner, priority=excluded.priority, priority_level=excluded.priority_level, item_type=excluded.item_type, source=excluded.source, collection=excluded.collection, due=excluded.due, scheduled_for=excluded.scheduled_for, date_mode=excluded.date_mode, recurrence=excluded.recurrence, reminder_time=excluded.reminder_time, energy=excluded.energy, context=excluded.context, area=excluded.area, project=excluded.project, goal=excluded.goal, original_notes=excluded.original_notes, last_interaction=excluded.last_interaction, last_nudge=excluded.last_nudge, completed_at=excluded.completed_at, attention_score=excluded.attention_score, staleness_days=excluded.staleness_days, starred=excluded.starred, todoist_id=excluded.todoist_id, show_in_todoist=excluded.show_in_todoist, raw_json=excluded.raw_json, dirty=0, updated_at=CURRENT_TIMESTAMP WHERE items.dirty=0`,
+      `INSERT INTO items (${ITEM_COLUMNS.join(", ")}) VALUES (${placeholders}) ON CONFLICT(owner_id, id) DO UPDATE SET title=excluded.title, status=excluded.status, burner=excluded.burner, priority=excluded.priority, priority_level=excluded.priority_level, item_type=excluded.item_type, source=excluded.source, collection=excluded.collection, due=excluded.due, scheduled_for=excluded.scheduled_for, date_mode=excluded.date_mode, recurrence=excluded.recurrence, reminder_time=excluded.reminder_time, energy=excluded.energy, context=excluded.context, area=excluded.area, project=excluded.project, goal=excluded.goal, original_notes=excluded.original_notes, last_interaction=excluded.last_interaction, last_nudge=excluded.last_nudge, completed_at=excluded.completed_at, attention_score=excluded.attention_score, staleness_days=excluded.staleness_days, starred=excluded.starred, raw_json=excluded.raw_json, dirty=0, updated_at=CURRENT_TIMESTAMP WHERE items.dirty=0`,
     ).bind(...values);
   });
   for (let index = 0; index < statements.length; index += 35) await db.batch(statements.slice(index, index + 35));

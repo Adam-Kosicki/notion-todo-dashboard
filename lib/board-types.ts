@@ -29,8 +29,6 @@ export type BoardItem = {
   attentionScore: number;
   stalenessDays: number;
   starred: boolean;
-  todoistId: string | null;
-  showInTodoist: boolean;
   dirty: boolean;
   updatedAt: string;
 };
@@ -83,7 +81,7 @@ export type HomeVisibility = { goals: boolean; purchases: boolean };
 
 export type BoardPayload = {
   items: BoardItem[];
-  connections: { notion: boolean; notionManaged: boolean; todoist: boolean };
+  connections: { notion: boolean; notionManaged: boolean };
   relations: { areas: RelationOption[]; projects: RelationOption[]; goals: RelationOption[] };
   collections: string[];
   lists: BoardList[];
@@ -114,6 +112,5 @@ export type EditableChanges = Partial<Pick<BoardItem,
   | "lastInteraction"
   | "completedAt"
   | "starred"
-  | "showInTodoist"
   | "collection"
 >>;

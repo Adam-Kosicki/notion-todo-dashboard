@@ -92,15 +92,6 @@ Reminder is a dedicated item type and view. A reminder can store:
 
 The current Site stores and edits the schedule. Notification delivery is a future integration. The intended options are Apple Reminders for native device notifications or Google Calendar for calendar-based recurrence. Burner Board should remain the editing interface and Notion should remain the database.
 
-## Todoist behavior
-
-- Every open item in Today is marked `Show in Todoist`.
-- If Todoist is connected, Today items without a Todoist task are created there automatically.
-- Moving an item to Today also queues it for Todoist immediately.
-- Renames, details, priority, dates, and completion update the linked Todoist task.
-- Archiving removes the linked Todoist task.
-- Items outside Today can still be sent to Todoist manually from the full editor.
-
 ## Future integration work
 
 1. Choose Apple Reminders or Google Calendar as the first notification delivery provider.
