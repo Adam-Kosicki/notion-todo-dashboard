@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const items = sqliteTable(
   "items",
@@ -164,5 +164,64 @@ export const activityEvents = sqliteTable(
     primaryKey({ columns: [table.id] }),
     index("idx_activity_owner_entity").on(table.ownerId, table.entityId),
     index("idx_activity_owner_timestamp").on(table.ownerId, table.timestamp),
+  ],
+);
+
+// Phase 3 (docs/plans/burner-board-roadmap.md): Focus is a user-selected current-priority set,
+// independent of List membership, importance, and Last Interaction. Like Groups (see
+// PRODUCT_SPEC.md's "Groups" section), it has no Notion equivalent and never round-trips there -
+// unlike items/lists, it is NOT gated behind d1_primary storage mode (see commands.ts's
+// requiresD1Primary), so it's usable by the real owner today, not only after the phase 4
+// cutover.
+export const focusItems = sqliteTable(
+  "focus_items",
+  {
+    ownerId: text("owner_id").notNull(),
+    itemId: text("item_id").notNull(),
+    selectedAt: text("selected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    reviewUntil: text("review_until"),
+  },
+  (table) => [primaryKey({ columns: [table.ownerId, table.itemId] })],
+);
+
+// A Monday-start planning week (start_date is a calendar date, YYYY-MM-DD, in the owner's
+// timezone - see lib/domain/progress.ts's mondayStartOf). `reportJson` stays null while status
+// is "open" (stats are computed live from week_commitments); week.close fills it in exactly
+// once, and after that the stored snapshot is authoritative - per the roadmap's "closing a week
+// freezes its report; later edits do not rewrite historical reports."
+export const planningWeeks = sqliteTable(
+  "planning_weeks",
+  {
+    ownerId: text("owner_id").notNull(),
+    id: text("id").notNull(),
+    startDate: text("start_date").notNull(),
+    timezone: text("timezone").notNull(),
+    status: text("status").notNull().default("open"),
+    reportJson: text("report_json"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerId, table.id] }),
+    uniqueIndex("idx_planning_weeks_owner_start_unique").on(table.ownerId, table.startDate),
+  ],
+);
+
+// One row per item committed to a planning week. withdrawn_at/withdrawal_reason are set in
+// place rather than deleting the row - the weekly statistics contract's denominator is "all
+// commitments added to the week, including withdrawals," so a withdrawn commitment must remain
+// visible to that computation, not disappear.
+export const weekCommitments = sqliteTable(
+  "week_commitments",
+  {
+    ownerId: text("owner_id").notNull(),
+    weekId: text("week_id").notNull(),
+    itemId: text("item_id").notNull(),
+    addedAt: text("added_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    withdrawnAt: text("withdrawn_at"),
+    withdrawalReason: text("withdrawal_reason"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerId, table.weekId, table.itemId] }),
+    index("idx_week_commitments_owner_week").on(table.ownerId, table.weekId),
   ],
 );

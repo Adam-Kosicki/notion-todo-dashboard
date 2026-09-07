@@ -64,6 +64,13 @@
       "when": 1788809921581,
       "tag": "0008_sticky_dakota_north",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788815560331,
+      "tag": "0009_sour_tinkerer",
+      "breakpoints": true
     }
   ]
 }

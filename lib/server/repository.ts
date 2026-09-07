@@ -149,3 +149,118 @@ export async function findListRow(db: Database, ownerId: string, id: string): Pr
 export async function findListByName(db: Database, ownerId: string, name: string): Promise<ListRow | null> {
   return db.prepare("SELECT owner_id, id, name FROM lists WHERE owner_id = ? AND name = ?").bind(ownerId, name).first<ListRow>();
 }
+
+// --- Phase 3: Focus and weekly commitments (not gated by storage_mode - see commands.ts) ---
+
+export type FocusItemRow = { owner_id: string; item_id: string; selected_at: string; review_until: string | null };
+
+export async function listFocusItems(db: Database, ownerId: string): Promise<FocusItemRow[]> {
+  const result = await db.prepare("SELECT * FROM focus_items WHERE owner_id = ? ORDER BY selected_at DESC").bind(ownerId).all<FocusItemRow>();
+  return result.results;
+}
+
+export async function setFocusItem(db: Database, ownerId: string, itemId: string, reviewUntil: string | null): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO focus_items (owner_id, item_id, selected_at, review_until) VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+       ON CONFLICT (owner_id, item_id) DO UPDATE SET review_until = excluded.review_until`,
+    )
+    .bind(ownerId, itemId, reviewUntil)
+    .run();
+}
+
+export async function removeFocusItem(db: Database, ownerId: string, itemId: string): Promise<void> {
+  await db.prepare("DELETE FROM focus_items WHERE owner_id = ? AND item_id = ?").bind(ownerId, itemId).run();
+}
+
+export type PlanningWeekRow = {
+  owner_id: string;
+  id: string;
+  start_date: string;
+  timezone: string;
+  status: string;
+  report_json: string | null;
+};
+
+export async function findPlanningWeek(db: Database, ownerId: string, id: string): Promise<PlanningWeekRow | null> {
+  return db.prepare("SELECT * FROM planning_weeks WHERE owner_id = ? AND id = ?").bind(ownerId, id).first<PlanningWeekRow>();
+}
+
+export async function findPlanningWeekByStartDate(db: Database, ownerId: string, startDate: string): Promise<PlanningWeekRow | null> {
+  return db.prepare("SELECT * FROM planning_weeks WHERE owner_id = ? AND start_date = ?").bind(ownerId, startDate).first<PlanningWeekRow>();
+}
+
+export async function createPlanningWeek(db: Database, ownerId: string, id: string, startDate: string, timezone: string): Promise<void> {
+  await db
+    .prepare("INSERT INTO planning_weeks (owner_id, id, start_date, timezone, status) VALUES (?, ?, ?, ?, 'open')")
+    .bind(ownerId, id, startDate, timezone)
+    .run();
+}
+
+export async function closePlanningWeekRow(db: Database, ownerId: string, id: string, reportJson: string): Promise<void> {
+  await db
+    .prepare("UPDATE planning_weeks SET status = 'closed', report_json = ? WHERE owner_id = ? AND id = ?")
+    .bind(reportJson, ownerId, id)
+    .run();
+}
+
+export type WeekCommitmentRow = {
+  owner_id: string;
+  week_id: string;
+  item_id: string;
+  added_at: string;
+  withdrawn_at: string | null;
+  withdrawal_reason: string | null;
+};
+
+export async function findWeekCommitment(db: Database, ownerId: string, weekId: string, itemId: string): Promise<WeekCommitmentRow | null> {
+  return db
+    .prepare("SELECT * FROM week_commitments WHERE owner_id = ? AND week_id = ? AND item_id = ?")
+    .bind(ownerId, weekId, itemId)
+    .first<WeekCommitmentRow>();
+}
+
+export async function listWeekCommitments(db: Database, ownerId: string, weekId: string): Promise<WeekCommitmentRow[]> {
+  const result = await db
+    .prepare("SELECT * FROM week_commitments WHERE owner_id = ? AND week_id = ?")
+    .bind(ownerId, weekId)
+    .all<WeekCommitmentRow>();
+  return result.results;
+}
+
+export async function addWeekCommitment(db: Database, ownerId: string, weekId: string, itemId: string): Promise<void> {
+  await db
+    .prepare("INSERT INTO week_commitments (owner_id, week_id, item_id, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
+    .bind(ownerId, weekId, itemId)
+    .run();
+}
+
+export async function withdrawWeekCommitment(db: Database, ownerId: string, weekId: string, itemId: string, reason: string | null): Promise<void> {
+  await db
+    .prepare("UPDATE week_commitments SET withdrawn_at = CURRENT_TIMESTAMP, withdrawal_reason = ? WHERE owner_id = ? AND week_id = ? AND item_id = ?")
+    .bind(reason, ownerId, weekId, itemId)
+    .run();
+}
+
+export type ActivityEventRow = { entity_id: string; event_type: string; timestamp: string };
+
+/** Used by weekClose to reconstruct each committed item's complete/reopen history for computeWeekStats. */
+export async function listActivityEventsForItems(
+  db: Database,
+  ownerId: string,
+  itemIds: string[],
+  eventTypes: string[],
+): Promise<ActivityEventRow[]> {
+  if (itemIds.length === 0) return [];
+  const itemPlaceholders = itemIds.map(() => "?").join(",");
+  const typePlaceholders = eventTypes.map(() => "?").join(",");
+  const result = await db
+    .prepare(
+      `SELECT entity_id, event_type, timestamp FROM activity_events
+       WHERE owner_id = ? AND entity_id IN (${itemPlaceholders}) AND event_type IN (${typePlaceholders})
+       ORDER BY timestamp ASC`,
+    )
+    .bind(ownerId, ...itemIds, ...eventTypes)
+    .all<ActivityEventRow>();
+  return result.results;
+}

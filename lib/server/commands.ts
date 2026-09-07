@@ -1,18 +1,24 @@
 // Phase 1 (docs/plans/burner-board-roadmap.md, section 7): the single mutation entry point
-// for the new d1_primary storage mode. Enforces preconditions, idempotency, audit events, and
-// atomic persistence per command.
+// for the new command envelope. Enforces preconditions, idempotency, audit events, and atomic
+// persistence per command.
 //
-// Scope decision for this phase (routine engineering choice, not escalated): this module is
-// NOT wired into app/api/board/route.ts yet. It's fully built and tested in isolation against
-// the synthetic D1 harness (tests/commands.test.mjs), reachable once a later phase actually
-// flips an owner's storage_mode to "d1_primary" and routes requests through it. The real owner
-// stays on the existing legacy_notion path (board-store.ts, unchanged) until the phase 4
-// cutover gate. This keeps Phase 1 zero-risk to the live app while still proving the new layer
-// works end to end.
+// Scope decision for Phase 1 (routine engineering choice, not escalated): the items.*/lists.*
+// handlers are NOT wired into app/api/board/route.ts yet. They're fully built and tested in
+// isolation against the synthetic D1 harness (tests/commands.test.mjs), reachable once a later
+// phase actually flips an owner's storage_mode to "d1_primary" and routes requests through it.
+// The real owner stays on the existing legacy_notion path (board-store.ts, unchanged) until the
+// phase 4 cutover gate. This keeps Phase 1 zero-risk to the live app while still proving the
+// new layer works end to end.
+//
+// Phase 3 amends this: focus.*/week.* commands are exempt from the d1_primary gate (see
+// requiresD1Primary below) since Focus/weekly-commitments have no Notion equivalent at all -
+// same category as Groups. They're reachable for every owner today, items./lists. gating is
+// unchanged.
 //
 // D1-primary invariant: this file has no Notion import and makes no network call anywhere in
 // it. That's not a runtime check - it's true by construction, which is the simplest possible
-// guarantee that "d1_primary mode never invokes Notion."
+// guarantee that "d1_primary mode never invokes Notion." (Also true, trivially, for the
+// ungated focus.*/week.* commands - they don't touch Notion either.)
 import {
   COMMAND_SCHEMAS,
   CommandError,
@@ -20,6 +26,7 @@ import {
   type CommandAction,
   type CommandEnvelope,
   type CommandResult,
+  type FocusSetInput,
   type ItemsCompleteInput,
   type ItemsCreateInput,
   type ItemsDeleteInput,
@@ -31,17 +38,30 @@ import {
   type ListsCreateInput,
   type ListsDeleteInput,
   type ListsUpdateInput,
+  type WeekCloseInput,
+  type WeekCommitInput,
+  type WeekWithdrawInput,
   isKnownCommand,
 } from "@/lib/domain/contracts";
+import { computeWeekStats, weekEndDate, type WeekStats } from "@/lib/domain/progress";
 import {
+  addWeekCommitment,
   appendActivityEvent,
   bumpBoardRevision,
+  closePlanningWeekRow,
   findItemRow,
   findListByName,
   findListRow,
+  findPlanningWeek,
+  findWeekCommitment,
   getBoardState,
   getReceipt,
+  listActivityEventsForItems,
+  listWeekCommitments,
+  removeFocusItem,
   saveReceipt,
+  setFocusItem,
+  withdrawWeekCommitment,
   type Database,
   type ItemRow,
 } from "@/lib/server/repository";
@@ -78,6 +98,15 @@ async function requireD1Primary(db: Database, ownerId: string): Promise<number> 
     throw new CommandError("FORBIDDEN", "This owner is not in d1_primary storage mode yet.");
   }
   return state.revision;
+}
+
+// Phase 3: items.*/lists.* are Notion-synced legacy data, so they stay gated behind the phase 4
+// cutover as Phase 1 established. focus.*/week.* have no Notion equivalent at all (same category
+// as Groups - see db/schema.ts's focusItems comment), so they're exempt from that gate and work
+// for a legacy_notion owner today. Board-revision tracking still runs for every command either
+// way (see applyCommand) - this only controls the FORBIDDEN check.
+function requiresD1Primary(action: CommandAction): boolean {
+  return action.startsWith("items.") || action.startsWith("lists.");
 }
 
 function itemSnapshot(row: ItemRow | null) {
@@ -294,6 +323,112 @@ async function listsDelete(db: Database, ownerId: string, input: ListsDeleteInpu
   };
 }
 
+async function focusSet(db: Database, ownerId: string, input: FocusSetInput): Promise<HandlerOutcome<{ itemId: string; focused: boolean }>> {
+  const item = await findItemRow(db, ownerId, input.itemId);
+  if (!item) throw new CommandError("VALIDATION_FAILED", "itemId does not refer to an existing item.");
+  if (input.focused) {
+    await setFocusItem(db, ownerId, input.itemId, input.reviewUntil ?? null);
+  } else {
+    await removeFocusItem(db, ownerId, input.itemId);
+  }
+  return {
+    result: { itemId: input.itemId, focused: input.focused },
+    changedItemIds: [input.itemId],
+    changedListIds: [],
+    activity: [{
+      entityId: input.itemId,
+      eventType: input.focused ? "focus.added" : "focus.removed",
+      before: null,
+      after: input.focused ? { reviewUntil: input.reviewUntil ?? null } : null,
+    }],
+  };
+}
+
+async function weekCommit(db: Database, ownerId: string, input: WeekCommitInput): Promise<HandlerOutcome<{ weekId: string; itemId: string }>> {
+  const week = await findPlanningWeek(db, ownerId, input.weekId);
+  if (!week) throw new CommandError("NOT_FOUND", "Planning week not found.");
+  if (week.status === "closed") throw new CommandError("CONFLICT", "This week is closed.");
+  const item = await findItemRow(db, ownerId, input.itemId);
+  if (!item) throw new CommandError("VALIDATION_FAILED", "itemId does not refer to an existing item.");
+
+  const existing = await findWeekCommitment(db, ownerId, input.weekId, input.itemId);
+  if (existing && !existing.withdrawn_at) {
+    // Already committed and active - idempotent no-op rather than a duplicate row/event.
+    return { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] };
+  }
+  if (existing && existing.withdrawn_at) {
+    throw new CommandError("CONFLICT", "This item was already withdrawn from this week; re-committing it isn't supported yet.");
+  }
+
+  await addWeekCommitment(db, ownerId, input.weekId, input.itemId);
+  return {
+    result: { weekId: input.weekId, itemId: input.itemId },
+    changedItemIds: [input.itemId],
+    changedListIds: [],
+    activity: [{ entityId: input.itemId, eventType: "week.commit", before: null, after: { weekId: input.weekId } }],
+  };
+}
+
+async function weekWithdraw(db: Database, ownerId: string, input: WeekWithdrawInput): Promise<HandlerOutcome<{ weekId: string; itemId: string }>> {
+  const week = await findPlanningWeek(db, ownerId, input.weekId);
+  if (!week) throw new CommandError("NOT_FOUND", "Planning week not found.");
+  if (week.status === "closed") throw new CommandError("CONFLICT", "This week is closed.");
+  const existing = await findWeekCommitment(db, ownerId, input.weekId, input.itemId);
+  if (!existing) throw new CommandError("NOT_FOUND", "This item is not committed to this week.");
+  if (existing.withdrawn_at) {
+    return { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] };
+  }
+
+  await withdrawWeekCommitment(db, ownerId, input.weekId, input.itemId, input.reason ?? null);
+  return {
+    result: { weekId: input.weekId, itemId: input.itemId },
+    changedItemIds: [input.itemId],
+    changedListIds: [],
+    activity: [{ entityId: input.itemId, eventType: "week.withdraw", before: null, after: { reason: input.reason ?? null } }],
+  };
+}
+
+async function weekClose(db: Database, ownerId: string, input: WeekCloseInput): Promise<HandlerOutcome<WeekStats>> {
+  const week = await findPlanningWeek(db, ownerId, input.weekId);
+  if (!week) throw new CommandError("NOT_FOUND", "Planning week not found.");
+  if (week.status === "closed") {
+    // Closing an already-closed week returns the frozen snapshot verbatim - never recomputed.
+    return { result: JSON.parse(week.report_json ?? "null") as WeekStats, changedItemIds: [], changedListIds: [], activity: [] };
+  }
+
+  const commitments = await listWeekCommitments(db, ownerId, input.weekId);
+  const itemIds = commitments.map((commitment) => commitment.item_id);
+  const itemRows = await Promise.all(itemIds.map((id) => findItemRow(db, ownerId, id)));
+  const itemsById: Record<string, { itemType: string }> = {};
+  itemRows.forEach((row, index) => {
+    if (row) itemsById[itemIds[index]] = { itemType: row.item_type };
+  });
+  const events = await listActivityEventsForItems(db, ownerId, itemIds, ["items.complete", "items.reopen"]);
+
+  const stats = computeWeekStats({
+    week: { startDate: week.start_date, endDate: weekEndDate(week.start_date) },
+    commitments: commitments.map((commitment) => ({
+      itemId: commitment.item_id,
+      addedAt: commitment.added_at,
+      withdrawnAt: commitment.withdrawn_at,
+    })),
+    itemsById,
+    events: events.map((event) => ({
+      itemId: event.entity_id,
+      eventType: event.event_type as "items.complete" | "items.reopen",
+      timestamp: event.timestamp,
+    })),
+  });
+
+  await closePlanningWeekRow(db, ownerId, input.weekId, JSON.stringify(stats));
+  return {
+    result: stats,
+    changedItemIds: [],
+    changedListIds: [],
+    activity: [{ entityId: input.weekId, eventType: "week.close", before: null, after: stats }],
+  };
+}
+
 const HANDLERS: Record<CommandAction, (db: Database, ownerId: string, input: never) => Promise<HandlerOutcome<unknown>>> = {
   "items.create": itemsCreate,
   "items.update": itemsUpdate,
@@ -306,6 +441,10 @@ const HANDLERS: Record<CommandAction, (db: Database, ownerId: string, input: nev
   "lists.create": listsCreate,
   "lists.update": listsUpdate,
   "lists.delete": listsDelete,
+  "focus.set": focusSet,
+  "week.commit": weekCommit,
+  "week.withdraw": weekWithdraw,
+  "week.close": weekClose,
 };
 
 /**
@@ -319,7 +458,9 @@ export async function applyCommand(db: Database, ownerId: string, envelope: Comm
     if (!isKnownCommand(envelope.action)) {
       throw new CommandError("VALIDATION_FAILED", `Unknown action: ${envelope.action}`);
     }
-    const boardRevisionBefore = await requireD1Primary(db, ownerId);
+    const boardRevisionBefore = requiresD1Primary(envelope.action)
+      ? await requireD1Primary(db, ownerId)
+      : (await getBoardState(db, ownerId)).revision;
     if (envelope.expectedBoardRevision !== undefined && envelope.expectedBoardRevision !== boardRevisionBefore) {
       throw new CommandError("CONFLICT", "The board changed since you last loaded it.", { currentBoardRevision: boardRevisionBefore });
     }

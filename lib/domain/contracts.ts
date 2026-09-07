@@ -129,6 +129,33 @@ export type ListsCreateInput = z.infer<typeof ListsCreateSchema>;
 export type ListsUpdateInput = z.infer<typeof ListsUpdateSchema>;
 export type ListsDeleteInput = z.infer<typeof ListsDeleteSchema>;
 
+// --- Phase 3: Focus and weekly commitments ---
+// Toggle semantics (one item at a time) rather than a batch "replace the whole focus set" -
+// this matches focus_items' per-item review_until column (each focus item can carry its own
+// optional date) and maps directly onto a UI checkbox. A routine implementation choice, not
+// an escalated one - the roadmap's command table only says "explicit selected IDs."
+const dateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
+
+export const FocusSetSchema = z.object({
+  itemId: idSchema,
+  focused: z.boolean(),
+  reviewUntil: dateOnlySchema.nullable().optional(),
+});
+export type FocusSetInput = z.infer<typeof FocusSetSchema>;
+
+export const WeekCommitSchema = z.object({ weekId: idSchema, itemId: idSchema });
+export type WeekCommitInput = z.infer<typeof WeekCommitSchema>;
+
+export const WeekWithdrawSchema = z.object({
+  weekId: idSchema,
+  itemId: idSchema,
+  reason: z.string().max(500).nullable().optional(),
+});
+export type WeekWithdrawInput = z.infer<typeof WeekWithdrawSchema>;
+
+export const WeekCloseSchema = z.object({ weekId: idSchema });
+export type WeekCloseInput = z.infer<typeof WeekCloseSchema>;
+
 export const COMMAND_SCHEMAS = {
   "items.create": ItemsCreateSchema,
   "items.update": ItemsUpdateSchema,
@@ -141,6 +168,10 @@ export const COMMAND_SCHEMAS = {
   "lists.create": ListsCreateSchema,
   "lists.update": ListsUpdateSchema,
   "lists.delete": ListsDeleteSchema,
+  "focus.set": FocusSetSchema,
+  "week.commit": WeekCommitSchema,
+  "week.withdraw": WeekWithdrawSchema,
+  "week.close": WeekCloseSchema,
 } as const;
 export type CommandAction = keyof typeof COMMAND_SCHEMAS;
 
