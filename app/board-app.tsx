@@ -5,6 +5,7 @@ import {
   Archive,
   ArrowUpDown,
   BellRing,
+  BookOpen,
   CalendarClock,
   CalendarDays,
   CalendarPlus,
@@ -48,6 +49,7 @@ import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardLis
 
 import OrganizeMode from "./organize-mode";
 import "./organize.css";
+import { HistoryView } from "@/components/board/history-view";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
 import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, plannedDate, reorderedListIds } from "@/lib/list-behavior";
@@ -464,7 +466,7 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
   );
 }
 
-function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
+export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
   title: string;
   note: string;
   items: GroupedItem[];
@@ -602,11 +604,14 @@ function ListManagePopover({ list, itemCount, hiddenCounts, visibility, onSave, 
 
 function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => void }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState("general");
   const submit = () => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    onCreate(trimmed, type);
+    // Phase 2 (docs/plans/burner-board-roadmap.md, domain rule 5): new Lists are plain
+    // containers - no Type choice up front. Existing Lists keep whatever type they already
+    // have; List Type itself is still an open question (ADR 0003 topic 1), not retired here.
+    // Change it later from a list's own Manage popover if it matters for that list.
+    onCreate(trimmed, "general");
     setName("");
   };
   return (
@@ -617,9 +622,6 @@ function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => v
       </header>
       <div className="new-list-form">
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="List name" onKeyDown={(event) => { if (event.key === "Enter") submit(); }} />
-        <select value={type} onChange={(event) => setType(event.target.value)}>
-          {LIST_TYPES.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-        </select>
         <button type="button" disabled={!name.trim()} onClick={submit}>Create list</button>
       </div>
     </section>
@@ -1169,6 +1171,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     return data.items.filter((item) => {
       if (view === "active" && ["Done", "Archived"].includes(item.status)) return false;
       if (view === "unrated" && (["Done", "Archived"].includes(item.status) || !needsPriority(item))) return false;
+      if (view === "unfiled" && (["Done", "Archived"].includes(item.status) || item.collection)) return false;
       if (view === "no_due" && (["Done", "Archived"].includes(item.status) || item.priority === 0 || item.due || item.scheduledFor)) return false;
       if (view === "starred" && !item.starred) return false;
       if (view === "due" && !item.due) return false;
@@ -1184,8 +1187,6 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     const open = filtered.filter((item) => !["Done", "Archived"].includes(item.status));
     return {
       reminders: open.filter((item) => item.itemType === "Reminder").sort(urgencySort),
-      done: filtered.filter((item) => item.status === "Done").sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt)),
-      archived: filtered.filter((item) => item.status === "Archived").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     };
   }, [filtered]);
 
@@ -1385,6 +1386,18 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const mergeItems = async (draggedId: string, targetId: string) => {
     if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
+    // Phase 2 (docs/plans/burner-board-roadmap.md, domain rule 12): prevent NEW cross-List
+    // merges for first-release group consistency. Extending an EXISTING group (either item
+    // already carries a groupId) is unaffected - only a brand-new merge across different lists
+    // is blocked. This is a client-side guard only; board-store.ts isn't in Phase 2's scope, so
+    // the server itself doesn't enforce this yet.
+    const dragged = data.items.find((item) => item.id === draggedId);
+    const target = data.items.find((item) => item.id === targetId);
+    const formingNewGroup = !dragged?.groupId && !target?.groupId;
+    if (formingNewGroup && (dragged?.collection || null) !== (target?.collection || null)) {
+      toast.info("Grouping across different lists isn't supported yet - move them to the same list first.");
+      return;
+    }
     try {
       const result = await boardRequest({ action: "merge_items", id: draggedId, targetId });
       applyItemUpdates(result.items);
@@ -1447,6 +1460,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         </div>
         <div className="sync-cluster">
           <span className={data.connections.notion ? "sync-state live" : "sync-state snapshot"}><span />{data.connections.notion ? "Notion live" : "Snapshot"}</span>
+          <a href="/guide/ai" className="icon-button" aria-label="AI setup guide" title="AI setup guide"><BookOpen /></a>
           <button type="button" className="icon-button" onClick={() => demo ? toast.info("Exit the sample board to manage connections.") : setSettingsOpen(true)} aria-label="Open connections"><Settings2 /></button>
         </div>
       </header>
@@ -1480,7 +1494,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             <TabsTrigger value="calendar"><CalendarDays />Calendar</TabsTrigger>
             <TabsTrigger value="goals"><Target />Goals</TabsTrigger>
             <TabsTrigger value="reminders"><BellRing />Reminders</TabsTrigger>
-            <TabsTrigger value="completed"><Trophy />Finished</TabsTrigger>
+            <TabsTrigger value="completed"><Trophy />History</TabsTrigger>
           </TabsList>
         </Tabs>
         <p>{mode === "home"
@@ -1493,7 +1507,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             ? "Every long-term goal, in one place, regardless of any list's visibility setting."
             : mode === "reminders"
             ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
-            : "Completed tasks count toward your productivity history. Archived items stay recoverable."}</p>
+            : "Completed and archived work, searchable by list and date. Archived items stay recoverable."}</p>
       </section>
 
       {mode !== "organize" && <section className="filterbar">
@@ -1502,7 +1516,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <SelectTrigger className="filter-select"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="active">Open items</SelectItem>
-            <SelectItem value="unrated">Inbox</SelectItem>
+            <SelectItem value="unrated">Needs review</SelectItem>
+            <SelectItem value="unfiled">Unfiled (no list)</SelectItem>
             <SelectItem value="no_due">No due date</SelectItem>
             <SelectItem value="starred">Starred</SelectItem>
             <SelectItem value="due">Has due date</SelectItem>
@@ -1603,37 +1618,19 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           />
         </section>
       ) : (
-        <section className="dashboard-wrap productivity-wrap">
+        <section className="dashboard-wrap history-wrap">
           <div className="productivity-stats">
             <span><strong>{completedItems.length}</strong><small>Finished total</small></span>
             <span><strong>{completedThisWeek}</strong><small>Last 7 days</small></span>
             <span><strong>{completedThisMonth}</strong><small>This month</small></span>
           </div>
-          <div className="productivity-grid">
-            <TaskTable
-              collections={data.collections}
-              completed
-              empty="Finished tasks will appear here"
-              icon={Trophy}
-              items={dashboard.done}
-              note="Your productivity history"
-              onOpen={(item) => setSelectedId(item.id)}
-              onSave={(id, changes) => void saveItem(id, changes)}
-              onDelete={(id) => void deleteItem(id)}
-              title="Finished"
-            />
-            <TaskTable
-              collections={data.collections}
-              empty="Nothing archived"
-              icon={Archive}
-              items={dashboard.archived}
-              note="Removed from active views, but still recoverable"
-              onOpen={(item) => setSelectedId(item.id)}
-              onSave={(id, changes) => void saveItem(id, changes)}
-              onDelete={(id) => void deleteItem(id)}
-              title="Archived"
-            />
-          </div>
+          <HistoryView
+            items={data.items}
+            collections={data.collections}
+            onOpen={(item) => setSelectedId(item.id)}
+            onSave={(id, changes) => void saveItem(id, changes)}
+            onDelete={(id) => void deleteItem(id)}
+          />
         </section>
       )}
 
