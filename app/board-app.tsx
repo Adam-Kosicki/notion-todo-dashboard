@@ -16,13 +16,11 @@ import {
   ExternalLink,
   Flame,
   Gift,
-  Gauge,
   GripVertical,
-  History,
   Inbox,
   ListChecks,
   Loader2,
-  PackageOpen,
+  Pin,
   Plus,
   RefreshCw,
   Search,
@@ -36,7 +34,6 @@ import {
   Unplug,
   WalletCards,
   X,
-  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -54,6 +51,7 @@ import OrganizeMode from "./organize-mode";
 import "./organize.css";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
+import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, reorderedListIds } from "@/lib/list-behavior";
 
 type BoardMode = "home" | "organize" | "reminders" | "completed";
 
@@ -405,11 +403,12 @@ function QuickEditor({ item, collections, allTags, onSave }: {
   );
 }
 
-function TaskRow({ item, collections, allTags, completed = false, groupMemberOf, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup }: {
+function TaskRow({ item, collections, allTags, completed = false, showPriority = true, groupMemberOf, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup }: {
   item: GroupedItem;
   collections: string[];
   allTags: string[];
   completed?: boolean;
+  showPriority?: boolean;
   groupMemberOf?: string;
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
@@ -429,6 +428,7 @@ function TaskRow({ item, collections, allTags, completed = false, groupMemberOf,
       className={`${done ? "dashboard-row is-done" : "dashboard-row"} ${item.dirty ? "is-dirty" : ""} ${dragOver ? "merge-target" : ""}`}
       draggable
       onDragStart={(event) => {
+        event.stopPropagation();
         if ((event.target as HTMLElement).closest("button, input, select, .priority-control")) {
           event.preventDefault();
           return;
@@ -436,11 +436,11 @@ function TaskRow({ item, collections, allTags, completed = false, groupMemberOf,
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", item.id);
       }}
-      onDragOver={(event) => { if (onMergeInto) { event.preventDefault(); event.stopPropagation(); } }}
-      onDragEnter={(event) => { if (onMergeInto) { event.stopPropagation(); setDragOver(true); } }}
+      onDragOver={(event) => { if (onMergeInto && event.shiftKey && !event.dataTransfer.types.includes(LIST_DRAG_TYPE)) { event.preventDefault(); event.stopPropagation(); } }}
+      onDragEnter={(event) => { if (onMergeInto && event.shiftKey && !event.dataTransfer.types.includes(LIST_DRAG_TYPE)) { event.stopPropagation(); setDragOver(true); } }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(event) => {
-        if (!onMergeInto) return;
+        if (!onMergeInto || !event.shiftKey || event.dataTransfer.types.includes(LIST_DRAG_TYPE)) return;
         event.preventDefault();
         event.stopPropagation();
         setDragOver(false);
@@ -460,7 +460,7 @@ function TaskRow({ item, collections, allTags, completed = false, groupMemberOf,
         </button>
         <span className={date?.includes("overdue") ? "dashboard-due overdue" : "dashboard-due"}>{date || "—"}</span>
         <span className="heat-score" title={`Combined urgency ${Math.round(attentionHeat(item))}`}><i />{attention}</span>
-        {usesPriority(item.itemType) ? <>
+        {showPriority && usesPriority(item.itemType) ? <>
           <span className={item.priority === null ? "row-score unrated" : item.priority === 0 ? "row-score zero" : "row-score"}>{item.priority === null ? "—" : item.priority}</span>
           <PriorityControl compact item={item} key={`${item.id}:${item.priority ?? "unrated"}:dashboard`} onChange={(priority) => onSave(item.id, { priority })} />
         </> : <span className="non-priority-type">{item.itemType}</span>}
@@ -470,6 +470,14 @@ function TaskRow({ item, collections, allTags, completed = false, groupMemberOf,
         <button type="button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })}><CheckCircle2 />{done ? "Reopen" : "Done"}</button>
         <button type="button" onClick={() => onSave(item.id, { lastInteraction: new Date().toISOString() })}><Sparkles />Active</button>
         <DateQuickPopover item={item} onSave={onSave} />
+        <label className="move-list-control">
+          <span className="sr-only">Move {item.title} to list</span>
+          <select aria-label={`Move ${item.title} to list`} value="" onChange={(event) => { if (event.currentTarget.value) onSave(item.id, { collection: event.currentTarget.value === "__unfiled__" ? null : event.currentTarget.value }); }}>
+            <option value="" disabled>Move to list…</option>
+            <option value="__unfiled__">No list / Inbox</option>
+            {collections.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </label>
         {groupMemberOf && onUnlinkItem ? (
           <button type="button" onClick={() => onUnlinkItem(item.id)}><Ungroup />Unlink</button>
         ) : isGroup && onDisbandGroup ? (
@@ -487,6 +495,7 @@ function TaskRow({ item, collections, allTags, completed = false, groupMemberOf,
               completed={completed}
               groupMemberOf={item.id}
               item={member}
+              showPriority={showPriority}
               key={member.id}
               onOpen={onOpen}
               onSave={onSave}
@@ -527,11 +536,13 @@ function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags
   );
 }
 
-function ListManagePopover({ list, itemCount, onSave, onDelete }: {
+function ListManagePopover({ list, itemCount, onSave, onDelete, onMoveUp, onMoveDown }: {
   list: BoardList;
   itemCount: number;
   onSave: (id: string, changes: EditableList) => void;
   onDelete: (id: string) => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -546,6 +557,29 @@ function ListManagePopover({ list, itemCount, onSave, onDelete }: {
         <label className="quick-field">
           <span>Name</span>
           <input key={`${list.id}:name`} defaultValue={list.name} onBlur={(event) => { const value = event.currentTarget.value.trim(); if (value && value !== list.name) onSave(list.id, { name: value }); }} />
+        </label>
+        <label className="quick-field">
+          <span>Home page</span>
+          <select value={list.pinned ? "pinned" : "other"} onChange={(event) => onSave(list.id, { pinned: event.currentTarget.value === "pinned" })}>
+            <option value="pinned">Pinned at the top</option>
+            <option value="other">Other lists</option>
+          </select>
+        </label>
+        <div className="list-position-controls">
+          <button type="button" disabled={!onMoveUp} onClick={onMoveUp}>Move up</button>
+          <button type="button" disabled={!onMoveDown} onClick={onMoveDown}>Move down</button>
+        </div>
+        <label className="quick-field">
+          <span>Tasks shown</span>
+          <select value={list.rule || "manual"} onChange={(event) => onSave(list.id, { rule: event.currentTarget.value as BoardList["rule"] })}>
+            {LIST_RULES.map(rule => <option key={rule.value} value={rule.value}>{rule.label}</option>)}
+          </select>
+        </label>
+        <label className="quick-field">
+          <span>Sort tasks</span>
+          <select value={list.itemSort || "priority"} onChange={(event) => onSave(list.id, { itemSort: event.currentTarget.value as BoardList["itemSort"] })}>
+            {LIST_SORTS.map(sort => <option key={sort.value} value={sort.value}>{sort.label}</option>)}
+          </select>
         </label>
         <label className="quick-field">
           <span>List type</span>
@@ -576,7 +610,7 @@ function ListManagePopover({ list, itemCount, onSave, onDelete }: {
         </label>
         {confirmDelete ? (
           <div className="list-delete-confirm">
-            <p>{itemCount ? `${itemCount} task${itemCount === 1 ? "" : "s"} will move to no list.` : "This list is empty."}</p>
+            <p>{itemCount ? `${itemCount} assigned task${itemCount === 1 ? "" : "s"} will move to no list. Their dates and details are kept.` : "No tasks are assigned to this list."} Automatic matches keep their own lists.</p>
             <div>
               <button type="button" onClick={() => setConfirmDelete(false)}>Cancel</button>
               <button type="button" className="danger" onClick={() => { onDelete(list.id); setOpen(false); }}>Delete list</button>
@@ -619,202 +653,118 @@ function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => v
 const LIST_DRAG_TYPE = "application/x-burner-list-id";
 
 function CollectionsView({
-  items,
-  lists,
-  onOpen,
-  onStatus,
-  onPriority,
-  onMove,
-  onCreateList,
-  onSaveList,
-  onDeleteList,
-  onReorderLists,
+  items, allItems, lists, allTags, onOpen, onSaveItem, onCreateList, onSaveList,
+  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup,
 }: {
   items: BoardItem[];
+  allItems: BoardItem[];
   lists: BoardList[];
+  allTags: string[];
   onOpen: (item: BoardItem) => void;
-  onStatus: (item: BoardItem) => void;
-  onPriority: (id: string, priority: number) => void;
-  onMove: (id: string, changes: EditableChanges) => void;
+  onSaveItem: (id: string, changes: EditableChanges) => void;
   onCreateList: (name: string, type: string) => void;
   onSaveList: (id: string, changes: EditableList) => void;
   onDeleteList: (id: string) => void;
-  onReorderLists: (orderedIds: string[]) => void;
+  onReorderLists: (orderedIds: string[], pin?: { id: string; pinned: boolean }) => void;
+  onMergeInto: (draggedId: string, targetId: string) => void;
+  onUnlinkItem: (id: string) => void;
+  onDisbandGroup: (id: string) => void;
 }) {
-  const listsByName = useMemo(() => new Map(lists.map((list) => [list.name, list])), [lists]);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const toggleExpanded = (name: string) => setExpanded((current) => {
-    const next = new Set(current);
-    if (next.has(name)) next.delete(name); else next.add(name);
-    return next;
-  });
-  const groups = new Map<string, BoardItem[]>();
-  for (const list of lists) groups.set(list.name, []);
-  for (const item of items) {
-    if (!item.collection && item.priority !== 0) continue;
-    const name = item.collection || item.source || item.itemType || "Other";
-    const group = groups.get(name) || [];
-    group.push(item);
-    groups.set(name, group);
-  }
-  const order = [...groups.keys()].sort((a, b) => {
-    const listA = listsByName.get(a);
-    const listB = listsByName.get(b);
-    if (listA && listB) return listA.sortOrder - listB.sortOrder;
-    if (listA) return -1;
-    if (listB) return 1;
-    const left = COLLECTION_ORDER.indexOf(a);
-    const right = COLLECTION_ORDER.indexOf(b);
-    if (left !== -1 || right !== -1) {
-      if (left === -1) return 1;
-      if (right === -1) return -1;
-      return left - right;
-    }
-    return a.localeCompare(b);
-  });
-  const reorderListDrop = (event: { dataTransfer: DataTransfer }, targetName: string) => {
-    const draggedId = event.dataTransfer.getData(LIST_DRAG_TYPE);
-    if (!draggedId) return false;
-    const targetList = listsByName.get(targetName);
-    if (!targetList || draggedId === targetList.id) return true;
-    const realLists = order.map((name) => listsByName.get(name)).filter((entry): entry is BoardList => Boolean(entry));
-    const fromIndex = realLists.findIndex((entry) => entry.id === draggedId);
-    const toIndex = realLists.findIndex((entry) => entry.id === targetList.id);
-    if (fromIndex === -1 || toIndex === -1) return true;
-    const reordered = [...realLists];
-    const [moved] = reordered.splice(fromIndex, 1);
-    reordered.splice(toIndex, 0, moved);
-    onReorderLists(reordered.map((entry) => entry.id));
-    return true;
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const ordered = [...lists].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  const names = lists.map(list => list.name);
+  const moveList = (draggedId: string, target: BoardList) => {
+    const dragged = lists.find(list => list.id === draggedId);
+    if (!dragged || dragged.id === target.id) return;
+    onReorderLists(reorderedListIds(lists, draggedId, target.id), { id: dragged.id, pinned: Boolean(target.pinned) });
   };
-
-  return (
-    <div className="collections-grid">
-      <NewListCard onCreate={onCreateList} />
-      {!order.length && <div className="collections-empty"><PackageOpen /><h2>No collection items match these filters</h2><p>Try Open items or clear the search.</p></div>}
-      {order.map((name) => {
-        const Icon = collectionIcon(name);
-        const list = listsByName.get(name) || null;
-        const typeDefaults = listTypeDefaults(list?.type || "general");
-        const showPriority = list?.showPriority ?? typeDefaults.showPriority;
-        const group = (groups.get(name) || []).sort((a, b) => {
-          const done = Number(["Done", "Archived"].includes(a.status)) - Number(["Done", "Archived"].includes(b.status));
-          return done || (b.priority ?? -1) - (a.priority ?? -1) || effectiveAttention(b) - effectiveAttention(a) || a.title.localeCompare(b.title);
-        });
-        const openCount = group.filter((item) => !["Done", "Archived"].includes(item.status)).length;
-        const row = (item: BoardItem) => {
-          const done = ["Done", "Archived"].includes(item.status);
-          const due = dueLabel(item.due || item.scheduledFor);
-          return (
-            <article
-              className={done ? "collection-row is-done" : "collection-row"}
-              draggable
-              key={item.id}
-              onDragStart={(event) => {
-                if ((event.target as HTMLElement).closest(".priority-control")) {
-                  event.preventDefault();
-                  return;
-                }
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", item.id);
-              }}
-              style={{ "--heat-color": heatColor(item) } as CSSProperties}
-            >
-              <button
-                aria-label={done ? `Mark ${item.title} not started` : `Complete ${item.title}`}
-                className="check-button"
-                onClick={() => onStatus(item)}
-                type="button"
-              >
-                {done ? <CheckCircle2 /> : <span />}
-              </button>
-              <button className="collection-title" onClick={() => onOpen(item)} type="button">
-                <strong>{item.title}</strong>
-                <span>
-                  {item.itemType}
-                  {due && <><i>·</i><em className={due.includes("overdue") ? "overdue" : ""}>{due}</em></>}
-                  {effectiveAttention(item) > 0.25 && <><i>·</i><em>Attention {Math.round(effectiveAttention(item))}</em></>}
-                </span>
-              </button>
-              {showPriority ? <>
-                <span className={item.priority === null ? "row-score unrated" : item.priority === 0 ? "row-score zero" : "row-score"}>
-                  {item.priority === null ? "?" : item.priority}
-                </span>
-                <PriorityControl
-                  compact
-                  item={item}
-                  key={`${item.id}:${item.priority ?? "unrated"}:collection`}
-                  onChange={(priority) => onPriority(item.id, priority)}
-                />
-              </> : <span className="non-priority-type">{item.itemType}</span>}
-              <button className="row-open" onClick={() => onOpen(item)} type="button" aria-label={`Edit ${item.title}`}><ChevronRight /></button>
-            </article>
-          );
-        };
-        const subtable = (label: string, rows: BoardItem[], changes: EditableChanges, kind: string, always = false) => {
-          if (!rows.length && !always) return null;
-          return (
-            <section
-              className={`collection-subtable subtable-${kind}`}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                const id = event.dataTransfer.getData("text/plain");
-                if (id) onMove(id, { collection: name, ...changes });
-              }}
-            >
-              <header><span>{label}</span><small>{rows.length}</small></header>
-              <div className="collection-table">
-                {rows.map(row)}
-                {!rows.length && <div className="subtable-empty">Drop a row here</div>}
-              </div>
-            </section>
-          );
-        };
-        const isExpanded = expanded.has(name);
-        return (
-          <section
-            className={isExpanded ? "collection-card is-expanded" : "collection-card"}
-            draggable={Boolean(list)}
-            key={name}
-            onDragOver={(event) => event.preventDefault()}
-            onDragStart={(event) => {
-              if (!list || (event.target as HTMLElement).closest("button, input, select, .priority-control, .collection-row")) {
-                event.preventDefault();
-                return;
-              }
+  const renderList = (list: BoardList, siblings: BoardList[]) => {
+    const matches = items.filter(item => belongsToList(item, list, lists));
+    const rows = collapseGroups(matches).sort((a, b) => compareListItems(a, b, list.itemSort, effectiveAttention));
+    const assignedCount = allItems.filter(item => item.collection === list.name).length;
+    const openCount = matches.filter(item => !["Done", "Archived"].includes(item.status)).length;
+    const isExpanded = expanded[list.id] ?? Boolean(list.pinned);
+    const Icon = list.rule === "inbox" ? Inbox : collectionIcon(list.name);
+    const index = siblings.findIndex(entry => entry.id === list.id);
+    const showPriority = list.showPriority ?? listTypeDefaults(list.type).showPriority;
+    return (
+      <section
+        key={list.id}
+        id={"home-list-" + list.id}
+        data-list-id={list.id}
+        aria-label={list.name + " list"}
+        className={"collection-card unified-list " + (isExpanded ? "is-expanded " : "") + (dropTarget === list.id ? "is-drop-target" : "")}
+        onDragOver={event => {
+          if (!event.dataTransfer.types.includes("text/plain") && !event.dataTransfer.types.includes(LIST_DRAG_TYPE)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropTarget(list.id);
+        }}
+        onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null); }}
+        onDrop={event => {
+          event.preventDefault();
+          event.stopPropagation();
+          setDropTarget(null);
+          const draggedList = event.dataTransfer.getData(LIST_DRAG_TYPE);
+          if (draggedList) { moveList(draggedList, list); return; }
+          const id = event.dataTransfer.getData("text/plain");
+          if (allItems.some(item => item.id === id)) {
+            onSaveItem(id, { collection: list.name });
+            setExpanded(current => ({ ...current, [list.id]: true }));
+          }
+        }}
+      >
+        <header className="collection-head">
+          <button
+            className="list-drag-handle" type="button" draggable
+            aria-label={"Drag to reorder " + list.name}
+            title="Drag to reorder; use Manage for Move up or Move down"
+            onDragStart={event => {
+              event.stopPropagation();
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData(LIST_DRAG_TYPE, list.id);
             }}
-            onDrop={(event) => {
-              event.preventDefault();
-              if (reorderListDrop(event, name)) return;
-              const id = event.dataTransfer.getData("text/plain");
-              if (id) onMove(id, showPriority ? { collection: name } : { collection: name, priority: 0 });
-            }}
-          >
-            <header className="collection-head">
-              <button className="collection-head-toggle" onClick={() => toggleExpanded(name)} type="button">
-                <span className="collection-icon"><Icon /></span>
-                <span><h2>{name}</h2><p>{openCount} open · {group.length} shown</p></span>
-                <ChevronRight className={isExpanded ? "collection-chevron open" : "collection-chevron"} />
-              </button>
-              {list && <ListManagePopover list={list} itemCount={group.length} onSave={onSaveList} onDelete={onDeleteList} />}
-              <span className="drop-note">Drop here</span>
-            </header>
-            {isExpanded && (
-              <div className="collection-subtables">
-                {subtable("Items", group, {}, "flat", true)}
-              </div>
-            )}
-          </section>
-        );
-      })}
+            onDragEnd={() => setDropTarget(null)}
+          ><GripVertical /></button>
+          <button className="collection-head-toggle" type="button" aria-expanded={isExpanded}
+            onClick={() => setExpanded(current => ({ ...current, [list.id]: !isExpanded }))}>
+            <span className="collection-icon"><Icon /></span>
+            <span><h2>{list.name}</h2><p>{openCount} open · {matches.length} shown</p></span>
+            <ChevronRight className={isExpanded ? "collection-chevron open" : "collection-chevron"} />
+          </button>
+          <button className={"list-pin " + (list.pinned ? "is-pinned" : "")} type="button"
+            aria-label={(list.pinned ? "Unpin " : "Pin ") + list.name} aria-pressed={Boolean(list.pinned)}
+            onClick={() => onSaveList(list.id, { pinned: !list.pinned })}><Pin /></button>
+          <ListManagePopover list={list} itemCount={assignedCount} onSave={onSaveList} onDelete={onDeleteList}
+            onMoveUp={index > 0 ? () => moveList(list.id, siblings[index - 1]) : undefined}
+            onMoveDown={index < siblings.length - 1 ? () => moveList(list.id, siblings[index + 1]) : undefined} />
+        </header>
+        {isExpanded && <>
+          <div className="list-rule-note">
+            <span>{LIST_RULES.find(rule => rule.value === (list.rule || "manual"))?.note}</span>
+            <span>{LIST_SORTS.find(sort => sort.value === (list.itemSort || "priority"))?.label}</span>
+          </div>
+          <div className="collection-table">
+            {rows.map(item => <TaskRow key={item.id} item={item} collections={names} allTags={allTags}
+              showPriority={showPriority} onOpen={onOpen} onSave={onSaveItem}
+              onMergeInto={onMergeInto} onUnlinkItem={onUnlinkItem} onDisbandGroup={onDisbandGroup} />)}
+            {!rows.length && <div className="subtable-empty">Drop a task here or choose this list from a task’s Move to list menu.</div>}
+          </div>
+        </>}
+      </section>
+    );
+  };
+  return (
+    <div className="home-lists">
+      <header className="lists-section-head"><ListChecks /><h2>Lists</h2><small>Pinned lists stay open at the top. Drag tasks between lists, and hold Shift while dropping on a task to group them.</small></header>
+      <div className="collections-grid">
+        <NewListCard onCreate={onCreateList} />
+        {ordered.map(list => renderList(list, ordered))}
+      </div>
     </div>
   );
 }
-
 function FieldLabel({ children, hint }: { children: ReactNode; hint?: string }) {
   return <label className="field-label"><span>{children}</span>{hint && <small>{hint}</small>}</label>;
 }
@@ -1208,8 +1158,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const completedItems = data?.items.filter((item) => item.status === "Done") || [];
   const stats = {
     active: openItems.length,
-    inbox: openItems.filter(needsPriority).length,
-    today: openItems.filter(isTodayItem).length,
+    inbox: openItems.filter(item => !item.collection).length,
+    today: openItems.filter(item => data?.lists.some(list => list.name === "Today" && belongsToList(item, list, data.lists))).length,
     reminders: openItems.filter((item) => item.itemType === "Reminder").length,
     completed: completedItems.length,
   };
@@ -1234,14 +1184,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
   const dashboard = useMemo(() => {
     const open = filtered.filter((item) => !["Done", "Archived"].includes(item.status));
-    const openGrouped = collapseGroups(open);
-    const today = openGrouped.filter(isTodayItem).sort(urgencySort);
-    const week = openGrouped.filter(isThisWeekItem).sort(urgencySort);
     return {
-      today,
-      week,
-      longer: openGrouped.filter((item) => !isTodayItem(item) && !isThisWeekItem(item) && item.itemType !== "Reminder" && ((item.priority !== null && item.priority > 0) || Boolean(item.due || item.scheduledFor))).sort(urgencySort),
-      triage: open.filter(needsPriority).sort(attentionSort),
       reminders: open.filter((item) => item.itemType === "Reminder").sort(urgencySort),
       done: filtered.filter((item) => item.status === "Done").sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt)),
       archived: filtered.filter((item) => item.status === "Archived").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
@@ -1259,16 +1202,21 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
   const saveItem = async (id: string, changes: EditableChanges) => {
     if (!data) return false;
+    const targetList = data.lists.find(list => list.name === changes.collection);
+    if (targetList) changes = { ...listMoveChanges(targetList), ...changes };
+    const moving = "collection" in changes;
+    const sourceItem = data.items.find(item => item.id === id);
+    const affected = (item: BoardItem) => item.id === id || Boolean(moving && sourceItem?.groupId && item.groupId === sourceItem.groupId);
     if (demo) {
-      setData(current => current ? { ...current, items: current.items.map(item => item.id === id ? { ...item, ...changes, dirty: false } : item) } : current);
+      setData(current => current ? { ...current, items: current.items.map(item => affected(item) ? { ...item, ...changes, dirty: false } : item) } : current);
       return true;
     }
-    setData(current => current ? { ...current, items: current.items.map(item => item.id === id ? { ...item, ...changes, dirty: true } : item) } : current);
+    setData(current => current ? { ...current, items: current.items.map(item => affected(item) ? { ...item, ...changes, dirty: true } : item) } : current);
     try {
       const result = await boardRequest({ action: "update", id, changes });
       setData((current) => current ? {
         ...current,
-        items: current.items.map((item) => item.id === id ? result.item : item),
+        items: current.items.map((item) => result.items?.find(updated => updated.id === item.id) || (item.id === id ? result.item : item)),
         collections: result.item.collection && !current.collections.includes(result.item.collection)
           ? [...current.collections, result.item.collection].sort()
           : current.collections,
@@ -1307,7 +1255,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     if (demo) { setData(current => current ? { ...current, lists: [...current.lists, { id: crypto.randomUUID(), name, type: type as BoardList["type"], showPriority: null, showLongTermGoals: null, reminderDefault: null, defaultItemType: null, sortOrder: current.lists.length }], collections: [...current.collections, name] } : current); return; }
     try {
       const result = await boardRequest({ action: "list_create", name, type });
-      setData((current) => current ? { ...current, lists: [...current.lists, result.list].sort((a, b) => a.name.localeCompare(b.name)) } : current);
+      setData((current) => current ? { ...current, lists: [...current.lists, result.list], collections: [...new Set([...current.collections, result.list.name])].sort() } : current);
       toast.success(`Created "${name}".`);
     } catch (createError) {
       toast.error(createError instanceof Error ? createError.message : "The list could not be created.");
@@ -1315,18 +1263,25 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const saveList = async (id: string, listChanges: EditableList) => {
-    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     try {
-      const result = await boardRequest({ action: "list_update", id, listChanges });
-      setData((current) => current ? { ...current, lists: current.lists.map((list) => list.id === id ? result.list : list) } : current);
+      const previous = data.lists.find(list => list.id === id);
+      if (!previous) return;
+      const newName = listChanges.name?.trim();
+      if (newName && data.lists.some(list => list.id !== id && list.name === newName)) throw new Error("A list with that name already exists.");
+      const result = demo ? { list: { ...previous, ...listChanges } } : await boardRequest({ action: "list_update", id, listChanges });
+      setData((current) => current ? {
+        ...current,
+        lists: current.lists.map((list) => list.id === id ? result.list : list),
+        collections: [...new Set(current.collections.map(name => name === previous.name ? result.list.name : name))].sort(),
+        items: current.items.map(item => item.collection === previous.name ? { ...item, collection: result.list.name } : item),
+      } : current);
     } catch (saveError) {
       toast.error(saveError instanceof Error ? saveError.message : "The list did not save.");
     }
   };
 
-  const reorderLists = async (orderedIds: string[]) => {
-    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
+  const reorderLists = async (orderedIds: string[], pin?: { id: string; pinned: boolean }) => {
     if (!data) return;
     const previousLists = data.lists;
     // Optimistic: renumber locally by the same index scheme the server will assign,
@@ -1335,11 +1290,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       ...current,
       lists: current.lists.map((list) => {
         const index = orderedIds.indexOf(list.id);
-        return index === -1 ? list : { ...list, sortOrder: index };
+        return index === -1 ? list : { ...list, sortOrder: index, ...(pin?.id === list.id ? { pinned: pin.pinned } : {}) };
       }),
     } : current);
+    if (demo) return;
     try {
-      const result = await boardRequest({ action: "list_reorder", orderedIds });
+      const result = await boardRequest({ action: "list_reorder", orderedIds, pin });
       setData((current) => current ? { ...current, lists: result.lists } : current);
     } catch (reorderError) {
       setData((current) => current ? { ...current, lists: previousLists } : current);
@@ -1348,14 +1304,14 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const deleteList = async (id: string) => {
-    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     const list = data.lists.find((entry) => entry.id === id);
     try {
-      const result = await boardRequest({ action: "list_delete", id });
+      const result = demo ? { reassignedCount: data.items.filter(item => item.collection === list?.name).length } : await boardRequest({ action: "list_delete", id });
       setData((current) => current ? {
         ...current,
         lists: current.lists.filter((entry) => entry.id !== id),
+        collections: current.collections.filter(name => name !== list?.name),
         items: current.items.map((item) => item.collection === list?.name ? { ...item, collection: null } : item),
       } : current);
       toast.success(result.reassignedCount ? `Deleted. ${result.reassignedCount} task${result.reassignedCount === 1 ? "" : "s"} moved to no list.` : "List deleted.");
@@ -1427,7 +1383,6 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
   const sources = [...new Set(data.items.map((item) => item.source).filter(Boolean) as string[])].sort();
   const allTags = [...new Set(data.items.flatMap((item) => tagList(item.tags)))].sort((a, b) => a.localeCompare(b));
-  const collectionCount = new Set(filtered.filter((item) => item.collection || item.priority === 0).map((item) => item.collection || item.source || item.itemType)).size;
 
   return (
     <main className="app-shell">
@@ -1450,8 +1405,11 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <button type="button" onClick={() => void create()} disabled={!capture.trim() || capturing}>{capturing ? <Loader2 className="animate-spin" /> : "Add"}</button>
         </div>
         <div className="stat-strip">
-          <button type="button" onClick={() => { setMode("home"); setView("active"); window.scrollTo({ top: 0, behavior: "smooth" }); }}><span>{stats.today}</span>Today</button>
-          <button type="button" className="needs-sort" onClick={() => { setMode("home"); setView("active"); inboxRef.current?.scrollIntoView({ behavior: "smooth" }); }}><span>{stats.inbox}</span>Inbox</button>
+          {[...data.lists].filter(list => list.pinned).sort((a, b) => a.sortOrder - b.sortOrder).slice(0, 2).map(list => (
+            <button type="button" key={list.id} onClick={() => { setMode("home"); setView("active"); requestAnimationFrame(() => document.getElementById("home-list-" + list.id)?.scrollIntoView({ behavior: "smooth" })); }}>
+              <span>{openItems.filter(item => belongsToList(item, list, data.lists)).length}</span>{list.name}
+            </button>
+          ))}
           <button type="button" className="front-stat" onClick={() => { setMode("reminders"); setView("active"); }}><span>{stats.reminders}</span>Reminders</button>
           <button type="button" className="todoist-stat" onClick={() => { setMode("completed"); setView("all"); }}><span>{stats.completed}</span>Finished</button>
         </div>
@@ -1470,7 +1428,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           </TabsList>
         </Tabs>
         <p>{mode === "home"
-          ? "Inbox, then today, this week, and longer. Your lists are below — expand any of them."
+          ? "Your pinned lists are first. Move tasks, reorder lists, and use Manage to change each list’s settings."
           : mode === "organize"
             ? "A focused pass through your tasks. Save, skip, or undo."
             : mode === "reminders"
@@ -1505,87 +1463,28 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       </section>}
 
       {mode === "organize" ? <OrganizeMode items={data.items} lists={data.lists} onSave={saveItem} onHome={() => setMode("home")} /> : mode === "home" ? (
-        <>
-          <section className="dashboard-wrap prioritize-wrap" ref={inboxRef}>
-            <TaskTable
-              allTags={allTags}
-              collections={data.collections}
-              empty="Nothing waiting here. Capture a thought above."
-              icon={Inbox}
-              items={dashboard.triage}
-              note="Unfiled and unscheduled. Add context freely; tasks stay here until placed."
-              onDrop={(id) => void saveItem(id, { priority: null })}
-              onOpen={(item) => setSelectedId(item.id)}
-              onSave={(id, changes) => void saveItem(id, changes)}
-              title="Inbox"
-            />
-          </section>
-          <section className="dashboard-wrap">
-            <div className="dashboard-grid">
-              <TaskTable
-                allTags={allTags}
-                collections={data.collections}
-                empty="Nothing due or scheduled today"
-                icon={CalendarClock}
-                items={dashboard.today}
-                note="Today and overdue. Automatically added to Todoist."
-                onDisbandGroup={(id) => void disbandGroup(id)}
-                onDrop={(id) => void saveItem(id, { scheduledFor: localIso(), showInTodoist: true })}
-                onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
-                onOpen={(item) => setSelectedId(item.id)}
-                onSave={(id, changes) => void saveItem(id, changes)}
-                onUnlinkItem={(id) => void unlinkItem(id)}
-                title="Today"
-              />
-              <TaskTable
-                allTags={allTags}
-                collections={data.collections}
-                empty="Nothing scheduled for the rest of this week"
-                icon={Zap}
-                items={dashboard.week}
-                note={weekEndIso() === localIso() ? "The week ends today. Next week appears in Longer." : `Tomorrow through ${dueLabel(weekEndIso())}`}
-                onDisbandGroup={(id) => void disbandGroup(id)}
-                onDrop={(id) => void saveItem(id, { scheduledFor: weekEndIso() })}
-                onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
-                onOpen={(item) => setSelectedId(item.id)}
-                onSave={(id, changes) => void saveItem(id, changes)}
-                onUnlinkItem={(id) => void unlinkItem(id)}
-                title="This week"
-              />
-              <TaskTable
-                allTags={allTags}
-                collections={data.collections}
-                empty="No longer-range prioritized tasks match these filters"
-                icon={History}
-                items={dashboard.longer}
-                note="After this week or no date. Highest attention first."
-                onDisbandGroup={(id) => void disbandGroup(id)}
-                onDrop={(id) => void saveItem(id, { due: null, scheduledFor: null, dateMode: "unspecified" })}
-                onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
-                onOpen={(item) => setSelectedId(item.id)}
-                onSave={(id, changes) => void saveItem(id, changes)}
-                onUnlinkItem={(id) => void unlinkItem(id)}
-                title="Longer"
-              />
-            </div>
-            <div className="heat-legend"><span>Attention color</span><i className="heat-low" />Low<i className="heat-mid" />Medium<i className="heat-high" />High</div>
-          </section>
-          <section className="collections-wrap">
-            <header className="lists-section-head"><ListChecks /><h2>Lists</h2><small>{collectionCount} lists · click one to expand</small></header>
-            <CollectionsView
-              items={filtered}
-              lists={data.lists}
-              onCreateList={(name, type) => void createList(name, type)}
-              onDeleteList={(id) => void deleteList(id)}
-              onReorderLists={(orderedIds) => void reorderLists(orderedIds)}
-              onOpen={(item) => setSelectedId(item.id)}
-              onPriority={(id, priority) => void saveItem(id, { priority })}
-              onMove={(id, changes) => void saveItem(id, changes)}
-              onSaveList={(id, changes) => void saveList(id, changes)}
-              onStatus={(item) => void saveItem(item.id, { status: ["Done", "Archived"].includes(item.status) ? "Not started" : "Done" })}
-            />
-          </section>
-        </>
+        <section className="collections-wrap" ref={inboxRef}>
+          {!data.lists.some(list => list.rule === "inbox") && filtered.some(item => !item.collection) && (
+            <TaskTable title="Unfiled tasks" note="These tasks have no list. Move them into a list, or set any list’s Tasks shown setting to Unfiled tasks."
+              items={filtered.filter(item => !item.collection)} icon={Inbox} empty="No unfiled tasks"
+              collections={data.collections} allTags={allTags} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} />
+          )}
+          <CollectionsView
+            items={filtered}
+            allItems={data.items}
+            lists={data.lists}
+            allTags={allTags}
+            onCreateList={(name, type) => void createList(name, type)}
+            onDeleteList={(id) => void deleteList(id)}
+            onReorderLists={(orderedIds, pin) => void reorderLists(orderedIds, pin)}
+            onOpen={(item) => setSelectedId(item.id)}
+            onSaveItem={(id, changes) => void saveItem(id, changes)}
+            onSaveList={(id, changes) => void saveList(id, changes)}
+            onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
+            onUnlinkItem={(id) => void unlinkItem(id)}
+            onDisbandGroup={(id) => void disbandGroup(id)}
+          />
+        </section>
       ) : mode === "reminders" ? (
         <section className="dashboard-wrap single-table-wrap">
           <div className="reminder-note"><BellRing /><span><strong>Reminder schedule</strong><small>Dates, times, and repeat rules are saved now. Apple Reminders or Google Calendar can handle notifications when that connection is added.</small></span></div>

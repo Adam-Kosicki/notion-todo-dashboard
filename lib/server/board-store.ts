@@ -4,6 +4,8 @@ import "server-only";
 import { env } from "cloudflare:workers";
 import { headers } from "next/headers";
 import type { BoardItem, BoardList, BoardPayload, EditableChanges, EditableList, RelationOption } from "@/lib/board-types";
+import { LIST_RULES, LIST_SORTS, listMoveChanges } from "@/lib/list-behavior";
+import { ITEM_TYPES, LIST_TYPES } from "@/lib/board-types";
 
 const NOTION_VERSION = "2026-03-11";
 
@@ -302,6 +304,7 @@ function rowToItem(row: any): BoardItem {
 }
 
 function rowToList(row: any): BoardList {
+  const preferences = row.preferences ? JSON.parse(row.preferences) : {};
   return {
     id: row.id,
     name: row.name,
@@ -311,6 +314,9 @@ function rowToList(row: any): BoardList {
     reminderDefault: row.reminder_default,
     defaultItemType: row.default_item_type,
     sortOrder: Number(row.sort_order || 0),
+    pinned: preferences.pinned === true,
+    rule: preferences.rule || "manual",
+    itemSort: preferences.itemSort || "priority",
   };
 }
 
@@ -397,26 +403,68 @@ export async function ensureListsSortOrder(ownerId: string) {
     .run();
 }
 
-export async function reorderLists(ownerId: string, orderedIds: string[]) {
+// Existing owner-scoped metadata stores presentation preferences without a database migration.
+// The marker deliberately survives list deletion, so deleted defaults never reappear.
+export async function ensureHomeLists(ownerId: string) {
   const db = runtime().DB;
+  // Imported or freely entered collection names must also have editable list cards.
+  await db.prepare(`INSERT INTO lists (owner_id, id, name, type, sort_order)
+    SELECT ?, 'list_' || lower(hex(randomblob(16))), collection, 'general',
+      (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM lists WHERE owner_id = ?)
+    FROM items WHERE owner_id = ? AND collection IS NOT NULL AND collection != ''
+      AND collection NOT IN (SELECT name FROM lists WHERE owner_id = ?)
+    GROUP BY collection`).bind(ownerId, ownerId, ownerId, ownerId).run();
+  const marker = await db.prepare("SELECT value FROM app_meta WHERE owner_id = ? AND key = 'home_lists_v1'").bind(ownerId).first();
+  if (marker) return;
+  const existing = await listLists(ownerId);
+  const defaults = [
+    { name: "Inbox", rule: "inbox" },
+    { name: "Today", rule: "manual" },
+    { name: "This week", rule: "manual" },
+    { name: "Longer", rule: "manual" },
+  ];
+  const statements = defaults.flatMap((entry, index) => {
+    const found = existing.find(list => list.name === entry.name);
+    const id = found?.id || `default_home_${index}`;
+    return [
+      ...(!found ? [db.prepare("INSERT OR IGNORE INTO lists (owner_id, id, name, type, sort_order) VALUES (?, ?, ?, 'general', ?)").bind(ownerId, id, entry.name, -4 + index)] : []),
+      db.prepare("INSERT OR IGNORE INTO app_meta (owner_id, key, value) VALUES (?, ?, ?)")
+        .bind(ownerId, `list_preferences:${id}`, JSON.stringify({ pinned: true, rule: entry.rule, itemSort: "priority" })),
+    ];
+  });
+  statements.push(db.prepare("INSERT OR IGNORE INTO app_meta (owner_id, key, value) VALUES (?, 'home_lists_v1', 'seeded')").bind(ownerId));
+  await db.batch(statements);
+}
+
+export async function reorderLists(ownerId: string, orderedIds: string[], pin?: { id: string; pinned: boolean }) {
+  const db = runtime().DB;
+  const existing = await listLists(ownerId);
+  if (!Array.isArray(orderedIds) || orderedIds.length !== existing.length || new Set(orderedIds).size !== existing.length || orderedIds.some(id => !existing.some(list => list.id === id))) {
+    throw new Error("The lists changed. Refresh and try reordering again.");
+  }
   const statements = orderedIds.map((id, index) =>
     db.prepare("UPDATE lists SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?").bind(index, ownerId, id),
   );
-  await db.batch(statements);
+  if (pin) {
+    if (!existing.some(list => list.id === pin.id) || typeof pin.pinned !== "boolean") throw new Error("Invalid list pin change.");
+    statements.push(db.prepare("INSERT INTO app_meta (owner_id, key, value) VALUES (?, ?, ?) ON CONFLICT(owner_id, key) DO UPDATE SET value = json_patch(app_meta.value, excluded.value)")
+      .bind(ownerId, `list_preferences:${pin.id}`, JSON.stringify({ pinned: pin.pinned })));
+  }
+  if (statements.length) await db.batch(statements);
   return { lists: await listLists(ownerId) };
 }
 
 export async function listLists(ownerId: string): Promise<BoardList[]> {
   const db = runtime().DB;
   const result = await db
-    .prepare("SELECT * FROM lists WHERE owner_id = ? ORDER BY sort_order, name COLLATE NOCASE")
+    .prepare("SELECT lists.*, app_meta.value AS preferences FROM lists LEFT JOIN app_meta ON app_meta.owner_id = lists.owner_id AND app_meta.key = 'list_preferences:' || lists.id WHERE lists.owner_id = ? ORDER BY sort_order, name COLLATE NOCASE")
     .bind(ownerId)
     .all();
   return (result.results || []).map(rowToList);
 }
 
 async function findList(ownerId: string, id: string) {
-  const row = await runtime().DB.prepare("SELECT * FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).first();
+  const row = await runtime().DB.prepare("SELECT lists.*, app_meta.value AS preferences FROM lists LEFT JOIN app_meta ON app_meta.owner_id = lists.owner_id AND app_meta.key = 'list_preferences:' || lists.id WHERE lists.owner_id = ? AND lists.id = ?").bind(ownerId, id).first();
   if (!row) throw new Error("List not found.");
   return row as Record<string, unknown> & { name: string };
 }
@@ -424,12 +472,13 @@ async function findList(ownerId: string, id: string) {
 export async function createList(ownerId: string, input: { name: string; type?: string }) {
   const name = input.name.trim();
   if (!name) throw new Error("Give the list a name first.");
+  if (!LIST_TYPES.some(type => type.value === (input.type || "general"))) throw new Error("Choose a valid list type.");
   const db = runtime().DB;
   const existing = await db.prepare("SELECT id FROM lists WHERE owner_id = ? AND name = ?").bind(ownerId, name).first();
   if (existing) throw new Error("A list with that name already exists.");
   const id = `list_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
-  const countRow = await db.prepare("SELECT COUNT(*) as count FROM lists WHERE owner_id = ?").bind(ownerId).first() as { count: number } | null;
+  const countRow = await db.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 as count FROM lists WHERE owner_id = ?").bind(ownerId).first() as { count: number } | null;
   await db.prepare(
     "INSERT INTO lists (owner_id, id, name, type, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).bind(ownerId, id, name, input.type || "general", countRow?.count || 0, now, now).run();
@@ -441,15 +490,24 @@ export async function updateList(ownerId: string, id: string, changes: EditableL
   const current = await findList(ownerId, id);
   const sets: string[] = [];
   const values: unknown[] = [];
+  if ("type" in changes && !LIST_TYPES.some(type => type.value === changes.type)) throw new Error("Choose a valid list type.");
+  if ("rule" in changes && !LIST_RULES.some(rule => rule.value === changes.rule)) throw new Error("Choose a valid list rule.");
+  if ("itemSort" in changes && !LIST_SORTS.some(sort => sort.value === changes.itemSort)) throw new Error("Choose a valid sorting option.");
+  if ("pinned" in changes && typeof changes.pinned !== "boolean") throw new Error("Invalid pin setting.");
+  if (changes.defaultItemType && !ITEM_TYPES.includes(changes.defaultItemType)) throw new Error("Choose a valid item type.");
+  if ("name" in changes && !changes.name?.trim()) throw new Error("Give the list a name first.");
+  const statements = [];
 
   if (changes.name) {
     const trimmed = changes.name.trim();
     if (trimmed && trimmed !== current.name) {
+      const duplicate = await db.prepare("SELECT id FROM lists WHERE owner_id = ? AND name = ? AND id != ?").bind(ownerId, trimmed, id).first();
+      if (duplicate) throw new Error("A list with that name already exists.");
       // Items only reference a list by its name string, so a rename has to carry every item along.
       // Notion's "Legacy List" select stays out of sync here (like any other bulk edit) until each
       // item is touched again — there is no bulk-push path today, only per-item updateItem() syncs.
-      await db.prepare("UPDATE items SET collection = ?, dirty = 1 WHERE owner_id = ? AND collection = ?")
-        .bind(trimmed, ownerId, current.name).run();
+      statements.push(db.prepare("UPDATE items SET collection = ?, dirty = 1 WHERE owner_id = ? AND collection = ?")
+        .bind(trimmed, ownerId, current.name));
       sets.push("name = ?");
       values.push(trimmed);
     }
@@ -460,11 +518,18 @@ export async function updateList(ownerId: string, id: string, changes: EditableL
   if ("reminderDefault" in changes) { sets.push("reminder_default = ?"); values.push(nullable(changes.reminderDefault)); }
   if ("defaultItemType" in changes) { sets.push("default_item_type = ?"); values.push(nullable(changes.defaultItemType)); }
 
+  if (["pinned", "rule", "itemSort"].some(key => key in changes)) {
+    const preferences = Object.fromEntries(Object.entries(changes).filter(([key]) => ["pinned", "rule", "itemSort"].includes(key)));
+    statements.push(db.prepare("INSERT INTO app_meta (owner_id, key, value) VALUES (?, ?, ?) ON CONFLICT(owner_id, key) DO UPDATE SET value = json_patch(app_meta.value, excluded.value)")
+      .bind(ownerId, `list_preferences:${id}`, JSON.stringify(preferences)));
+  }
+
   if (sets.length) {
     sets.push("updated_at = CURRENT_TIMESTAMP");
-    await db.prepare(`UPDATE lists SET ${sets.join(", ")} WHERE owner_id = ? AND id = ?`).bind(...values, ownerId, id).run();
+    statements.push(db.prepare(`UPDATE lists SET ${sets.join(", ")} WHERE owner_id = ? AND id = ?`).bind(...values, ownerId, id));
   }
-  return rowToList(await db.prepare("SELECT * FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).first());
+  if (statements.length) await db.batch(statements);
+  return rowToList(await findList(ownerId, id));
 }
 
 export async function deleteList(ownerId: string, id: string) {
@@ -473,11 +538,11 @@ export async function deleteList(ownerId: string, id: string) {
   const countRow = await db.prepare("SELECT COUNT(*) as count FROM items WHERE owner_id = ? AND collection = ?")
     .bind(ownerId, current.name).first() as { count: number } | null;
   const reassignedCount = countRow?.count || 0;
-  if (reassignedCount > 0) {
-    await db.prepare("UPDATE items SET collection = NULL, dirty = 1 WHERE owner_id = ? AND collection = ?")
-      .bind(ownerId, current.name).run();
-  }
-  await db.prepare("DELETE FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id).run();
+  await db.batch([
+    db.prepare("UPDATE items SET collection = NULL, dirty = 1 WHERE owner_id = ? AND collection = ?").bind(ownerId, current.name),
+    db.prepare("DELETE FROM lists WHERE owner_id = ? AND id = ?").bind(ownerId, id),
+    db.prepare("DELETE FROM app_meta WHERE owner_id = ? AND key = ?").bind(ownerId, `list_preferences:${id}`),
+  ]);
   return { deleted: true, reassignedCount };
 }
 
@@ -507,6 +572,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
   await ensureOrganization(ownerId);
   await ensureListsBackfill(ownerId);
   await ensureListsSortOrder(ownerId);
+  await ensureHomeLists(ownerId);
   const db = runtime().DB;
   const result = await db.prepare(
     "SELECT * FROM items WHERE owner_id = ? ORDER BY CASE status WHEN 'In progress' THEN 0 WHEN 'Not started' THEN 1 ELSE 2 END, COALESCE(priority, -1) DESC, attention_score DESC, title COLLATE NOCASE",
@@ -528,6 +594,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
     ).bind(ownerId).all();
     items = (refreshed.results || []).map(rowToItem);
   }
+  const boardLists = await listLists(ownerId);
   return {
     items,
     connections: { notion: notionManaged || providers.has("notion"), notionManaged, todoist: providers.has("todoist") },
@@ -536,8 +603,8 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
       projects: collectRelations(items, "project"),
       goals: collectRelations(items, "goal"),
     },
-    collections: [...new Set(items.map((item) => item.collection).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b)),
-    lists: await listLists(ownerId),
+    collections: [...new Set([...boardLists.map(list => list.name), ...items.map((item) => item.collection).filter(Boolean) as string[]])].sort((a, b) => a.localeCompare(b)),
+    lists: boardLists,
     importedCount: items.length,
   };
 }
@@ -693,14 +760,13 @@ function dateKey(value: string | null) {
 
 function belongsInToday(item: BoardItem) {
   if (["Done", "Archived"].includes(item.status)) return false;
-  if (item.collection === "Today") return true;
   const today = new Date().toISOString().slice(0, 10);
   const planned = dateKey(item.scheduledFor) || dateKey(item.due);
   return Boolean(planned && planned <= today);
 }
 
 function todoistDue(item: BoardItem) {
-  return dateKey(item.due) || dateKey(item.scheduledFor) || (item.collection === "Today" ? new Date().toISOString().slice(0, 10) : null);
+  return dateKey(item.due) || dateKey(item.scheduledFor) || null;
 }
 
 async function patchNotionItem(token: string, item: BoardItem, changes: EditableChanges) {
@@ -847,6 +913,22 @@ export async function disbandGroup(ownerId: string, anchorId: string) {
   return { items };
 }
 
+export async function updateBoardItem(ownerId: string, id: string, changes: EditableChanges) {
+  const before = await findItem(ownerId, id);
+  if (!("collection" in changes) || !before.groupId) return updateItem(ownerId, id, changes);
+  const members = await runtime().DB.prepare("SELECT id FROM items WHERE owner_id = ? AND group_id = ?")
+    .bind(ownerId, before.groupId).all();
+  const results = [];
+  for (const member of members.results || []) {
+    results.push(await updateItem(ownerId, String(member.id), changes));
+  }
+  return {
+    item: results.find(result => result.item.id === id)?.item || before,
+    items: results.map(result => result.item),
+    sync: results.find(result => result.sync.message || result.sync.notion === false)?.sync,
+  };
+}
+
 export async function updateItem(ownerId: string, id: string, changes: EditableChanges) {
   const before = await findItem(ownerId, id);
   const now = new Date().toISOString();
@@ -861,10 +943,9 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
   // newly assigned to that list (collection changing) and nothing already set itemType in
   // this same request — an explicit itemType change always wins. Existing items elsewhere
   // are never retroactively rewritten (see docs/adr — decision confirmed with the user).
-  if (normalizedChanges.collection && !("itemType" in normalizedChanges)) {
-    const listRow = await runtime().DB.prepare("SELECT default_item_type FROM lists WHERE owner_id = ? AND name = ?")
-      .bind(ownerId, normalizedChanges.collection).first() as { default_item_type: string | null } | null;
-    if (listRow?.default_item_type) normalizedChanges.itemType = listRow.default_item_type;
+  if (normalizedChanges.collection && normalizedChanges.collection !== before.collection) {
+    const list = (await listLists(ownerId)).find(list => list.name === normalizedChanges.collection);
+    if (list) Object.assign(normalizedChanges, { ...listMoveChanges(list), ...normalizedChanges });
   }
 
   const nonPriorityTypes = ["Goal", "Reminder", "Event", "Purchase", "List item", "Someday", "Reference"];

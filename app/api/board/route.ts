@@ -11,7 +11,7 @@ import {
   requireOwnerId,
   syncNotion,
   unlinkFromGroup,
-  updateItem,
+  updateBoardItem,
   updateList,
 } from "@/lib/server/board-store";
 import type { EditableChanges, EditableList } from "@/lib/board-types";
@@ -51,13 +51,14 @@ export async function POST(request: Request) {
       token?: string;
       targetId?: string;
       orderedIds?: string[];
+      pin?: { id: string; pinned: boolean };
     };
 
     if (body.action === "create") {
       return Response.json({ item: await createItem(ownerId, body.title || "") }, { status: 201 });
     }
     if (body.action === "update" && body.id && body.changes) {
-      return Response.json(await updateItem(ownerId, body.id, body.changes));
+      return Response.json(await updateBoardItem(ownerId, body.id, body.changes));
     }
     if (body.action === "list_create") {
       return Response.json({ list: await createList(ownerId, { name: body.name || "", type: body.type }) }, { status: 201 });
@@ -69,7 +70,7 @@ export async function POST(request: Request) {
       return Response.json(await deleteList(ownerId, body.id));
     }
     if (body.action === "list_reorder" && body.orderedIds) {
-      return Response.json(await reorderLists(ownerId, body.orderedIds));
+      return Response.json(await reorderLists(ownerId, body.orderedIds, body.pin));
     }
     if (body.action === "merge_items" && body.id && body.targetId) {
       return Response.json(await mergeItems(ownerId, body.id, body.targetId));

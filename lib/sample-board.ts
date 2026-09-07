@@ -1,4 +1,4 @@
-import type { BoardItem, BoardPayload } from "./board-types";
+import type { BoardItem, BoardPayload, ListRule } from "./board-types";
 
 /** Explicitly selected, temporary examples. Never persisted or sent to providers. */
 export function sampleBoard(): BoardPayload {
@@ -23,14 +23,18 @@ export function sampleBoard(): BoardPayload {
   return {
     items: tasks.map((task, index) => ({ ...base, ...task, id: `sample-${index}` })),
     lists: [
+      { name: "Inbox", type: "general", defaultItemType: null, pinned: true, rule: "inbox" },
+      { name: "Today", type: "general", defaultItemType: null, pinned: true, rule: "manual" },
+      { name: "This week", type: "general", defaultItemType: null, pinned: true, rule: "manual" },
+      { name: "Longer", type: "general", defaultItemType: null, pinned: true, rule: "manual" },
       { name: "Grocery", type: "shopping", defaultItemType: "Purchase" },
       { name: "Career", type: "general", defaultItemType: "Task" },
       { name: "Health", type: "general", defaultItemType: "Task" },
       { name: "Projects", type: "general", defaultItemType: "Task" },
       { name: "Someday", type: "reference", defaultItemType: "Someday" },
-    ].map((list, index) => ({ ...list, type: list.type as BoardPayload["lists"][number]["type"], id: `sample-list-${index}`, showPriority: null, showLongTermGoals: null, reminderDefault: null, sortOrder: index })),
+    ].map((list, index) => ({ ...list, rule: (list.rule || "manual") as ListRule, type: list.type as BoardPayload["lists"][number]["type"], id: `sample-list-${index}`, showPriority: null, showLongTermGoals: null, reminderDefault: null, sortOrder: index })),
     connections: { notion: false, notionManaged: false, todoist: false },
     relations: { areas: [], projects: [], goals: [] },
-    collections: ["Grocery", "Career", "Health", "Projects", "Someday"], importedCount: tasks.length,
+    collections: ["Inbox", "Today", "This week", "Longer", "Grocery", "Career", "Health", "Projects", "Someday"], importedCount: tasks.length,
   };
 }

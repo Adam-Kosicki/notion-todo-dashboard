@@ -1785,6 +1785,36 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
   color: #8d99a7;
   font-size: 12px;
 }
+.home-lists .lists-section-head { margin: 18px 0 12px; flex-wrap: wrap; }
+.home-lists .lists-section-head small { font-size: 0.875rem; }
+.home-lists .collections-grid { grid-template-columns: minmax(0, 1fr); }
+.unified-list .collection-head { grid-template-columns: auto minmax(0, 1fr) auto auto; cursor: default; }
+.list-drag-handle, .list-pin {
+  display: grid; place-items: center; width: 32px; height: 32px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; color: #8a97a4;
+}
+.list-drag-handle { cursor: grab; }
+.list-drag-handle:active { cursor: grabbing; }
+.list-pin { cursor: pointer; }
+.list-drag-handle svg, .list-pin svg { width: 17px; height: 17px; }
+.list-pin.is-pinned { color: #78b9ff; background: #20364c; }
+.list-pin:hover, .list-drag-handle:hover { border-color: #6485a6; }
+.unified-list.is-drop-target { border-color: #78b9ff; box-shadow: 0 0 0 2px #78b9ff55; }
+.list-rule-note { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; padding: 10px 16px; color: #a4b2c2; font-size: 0.875rem; }
+.empty-pinned { padding: 16px; color: #a4b2c2; }
+.list-manage-popover { width: min(340px, calc(100vw - 24px)); max-height: min(650px, 85vh); overflow-y: auto; }
+.list-position-controls { display: flex; gap: 8px; }
+.list-position-controls button, .move-list-control select { border: 1px solid #394a5c; border-radius: 7px; background: #19232e; color: #c7d2de; padding: 6px 9px; font: inherit; font-size: 0.875rem; }
+.list-position-controls button:disabled { opacity: 0.4; cursor: default; }
+.move-list-control select { max-width: 220px; }
+.unified-list .quick-toolbar { flex-wrap: wrap; }
+.unified-list:focus-within .quick-toolbar { opacity: 1; pointer-events: auto; }
+@media (max-width: 600px) {
+  .unified-list .collection-head { gap: 5px; padding: 10px 6px; }
+  .unified-list .collection-head-toggle { grid-template-columns: minmax(0, 1fr) 16px; gap: 5px; }
+  .unified-list .collection-head-toggle .collection-icon { display: none; }
+  .unified-list .quick-toolbar { opacity: 1; pointer-events: auto; }
+}
 .token-form {
   display: flex;
   align-items: flex-start;

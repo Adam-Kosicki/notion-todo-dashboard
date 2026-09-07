@@ -41,6 +41,9 @@ export const ITEM_TYPES = ["Task", "Goal", "Reminder", "Event", "Purchase", "Lis
 
 export type ListType = "general" | "goal" | "shopping" | "recurring_payment" | "reference";
 
+export type ListRule = "manual" | "today" | "week" | "longer" | "inbox";
+export type ListItemSort = "priority" | "attention" | "due" | "title" | "updated";
+
 export type BoardList = {
   id: string;
   name: string;
@@ -50,6 +53,9 @@ export type BoardList = {
   reminderDefault: string | null;
   defaultItemType: string | null;
   sortOrder: number;
+  pinned?: boolean;
+  rule?: ListRule;
+  itemSort?: ListItemSort;
 };
 
 export const LIST_TYPES: Array<{
@@ -70,7 +76,7 @@ export function listTypeDefaults(type: string) {
   return LIST_TYPES.find((entry) => entry.value === type) || LIST_TYPES[0];
 }
 
-export type EditableList = Partial<Pick<BoardList, "name" | "type" | "showPriority" | "showLongTermGoals" | "reminderDefault" | "defaultItemType">>;
+export type EditableList = Partial<Pick<BoardList, "name" | "type" | "showPriority" | "showLongTermGoals" | "reminderDefault" | "defaultItemType" | "pinned" | "rule" | "itemSort">>;
 
 export type BoardPayload = {
   items: BoardItem[];
