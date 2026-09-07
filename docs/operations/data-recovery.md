@@ -111,13 +111,16 @@ and actively deploying (the build log the owner pasted). At least one claim in t
 already gone stale since it was written, which is a reason for a cheap re-check before relying on
 the Access claim, not a reason to distrust it outright.
 
-**Downgraded from "unknown, blocking" to "probably fine, cheap to re-confirm, not a Phase 0
-blocker."** The roadmap's own gate table (section 11: "Actual production identity and owner
-mapping... Verify trusted edge, bypass prevention...") still applies before publishing MCP or
-migrating owner keys — re-verify then, ideally once there's a production deployment (and Deploy
-command, see the bug below) the owner considers current and trustworthy, by checking the
-Cloudflare Access application still exists and is still scoped to the owner's email (a dashboard
-check, not a code change).
+**Resolved 2026-09-07, confirmed live, not just historical.** After redeploying current code to
+production (see below), an unauthenticated `curl` to both `/` and `/api/board` on
+`site-creator-vinext-starter.adamjkosicki.workers.dev` returned `302` to
+`https://adamjkosicki.cloudflareaccess.com/cdn-cgi/access/login/...` — Cloudflare Access is
+genuinely live in front of this Worker today. This closes the gap in practice: a request without
+a valid Access session never reaches `requireOwnerId()` with a forgeable header at all. Still
+worth re-checking the Access application's email restriction specifically before publishing MCP
+(the roadmap's gate in section 11 — a live redirect proves Access is in front of the Worker, not
+that its policy is scoped correctly), but the core "is anything even in front of this Worker"
+question is now answered with evidence, not inference.
 
 ## Deployment bug found and fixed this phase (Cloudflare Workers Builds / Git-connected CI/CD)
 

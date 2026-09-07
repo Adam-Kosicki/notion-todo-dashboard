@@ -249,15 +249,13 @@ codebase; identity is entirely delegated to whichever edge layer sits in front o
 All D1 tables are scoped by `owner_id` as part of their primary key.
 
 **Phase 0 finding (2026-09-07, `docs/plans/burner-board-roadmap.md`): this trust is not verified
-by this codebase itself.** No signature check, no JWT verification, no stripping logic here — if
+by this codebase itself** — no signature check, no JWT verification, no stripping logic here; if
 a request reached the Worker directly, `requireOwnerId()` would accept a client-supplied header
-as-is. Per `docs/2026-09-03-grilling-session-status.md`, Cloudflare Access was reportedly
-configured in front of the production Worker (restricted to the owner's own email) as of
-2026-09-03, which would close this gap in practice — but that same doc's claim about the
-Workers Builds pipeline has already gone stale since (see `docs/operations/data-recovery.md`),
-so treat the Access claim as a strong prior worth a cheap re-check, not settled proof. See
-`docs/operations/data-recovery.md`'s "Identity and request authentication" section for the full
-reasoning.
+as-is. **Confirmed live the same day**, though: an unauthenticated request to the deployed Worker
+redirects to `adamjkosicki.cloudflareaccess.com` (Cloudflare Access), so in practice a forged
+header never reaches `requireOwnerId()` without a valid Access session first. See
+`docs/operations/data-recovery.md`'s "Identity and request authentication" section for how this
+was checked.
 
 ## Testing
 
