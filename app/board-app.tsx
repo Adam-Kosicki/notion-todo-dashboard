@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   BellRing,
   CalendarClock,
+  CalendarDays,
   CalendarPlus,
   CalendarX2,
   Check,
@@ -50,9 +51,9 @@ import OrganizeMode from "./organize-mode";
 import "./organize.css";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
-import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, reorderedListIds } from "@/lib/list-behavior";
+import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, plannedDate, reorderedListIds } from "@/lib/list-behavior";
 
-type BoardMode = "home" | "organize" | "reminders" | "completed";
+type BoardMode = "home" | "organize" | "calendar" | "reminders" | "completed";
 
 const STATUSES = ["Not started", "In progress", "Done", "Archived"];
 const ENERGIES = ["High focus", "Medium", "Low / admin"];
@@ -606,6 +607,58 @@ function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => v
   );
 }
 
+function UpcomingWidget({ items, position, onOpen, onMove }: {
+  items: BoardItem[];
+  position: "top" | "bottom";
+  onOpen: (item: BoardItem) => void;
+  onMove: () => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try { setCollapsed(localStorage.getItem("burner-upcoming-collapsed") === "1"); } catch { /* per-viewer only */ }
+  }, []);
+  const toggleCollapsed = () => {
+    setCollapsed((current) => {
+      const next = !current;
+      try { localStorage.setItem("burner-upcoming-collapsed", next ? "1" : "0"); } catch { /* per-viewer only */ }
+      return next;
+    });
+  };
+  const upcoming = items
+    .filter((item) => item.itemType !== "Event" && (item.due || item.scheduledFor))
+    .sort((a, b) => (plannedDate(a) || "9999").localeCompare(plannedDate(b) || "9999"))
+    .slice(0, 12);
+  return (
+    <section className={collapsed ? "upcoming-widget is-collapsed" : "upcoming-widget"}>
+      <header className="upcoming-widget-head">
+        <button type="button" className="upcoming-widget-toggle" aria-expanded={!collapsed} onClick={toggleCollapsed}>
+          <CalendarDays />
+          <span><h2>Upcoming due dates</h2><p>{upcoming.length} scheduled</p></span>
+          <ChevronRight className={collapsed ? "collection-chevron" : "collection-chevron open"} />
+        </button>
+        <button type="button" className="upcoming-widget-move" title={position === "top" ? "Move to bottom of Home" : "Move to top of Home"} onClick={onMove}>
+          <GripVertical />{position === "top" ? "Move down" : "Move up"}
+        </button>
+      </header>
+      {!collapsed && (
+        <div className="upcoming-widget-body">
+          {!upcoming.length && <p className="upcoming-widget-empty">Nothing scheduled. Set a due or scheduled date on a task to see it here.</p>}
+          {upcoming.map((item) => {
+            const label = dueLabel(item.due || item.scheduledFor);
+            return (
+              <button key={item.id} type="button" className="upcoming-row" onClick={() => onOpen(item)}>
+                <span className={label?.includes("overdue") ? "upcoming-date overdue" : "upcoming-date"}>{label}</span>
+                <span className="upcoming-title">{item.title}</span>
+                <span className="upcoming-collection">{item.collection || "No list"}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 const LIST_DRAG_TYPE = "application/x-burner-list-id";
 
 function CollectionsView({
@@ -1088,6 +1141,15 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const [capturing, setCapturing] = useState(false);
   const captureRef = useRef<HTMLInputElement>(null);
   const captureLock = useRef(false);
+  const [eventCapture, setEventCapture] = useState("");
+  const [widgetTop, setWidgetTopState] = useState(true);
+  useEffect(() => {
+    try { setWidgetTopState(localStorage.getItem("burner-upcoming-position") !== "bottom"); } catch { /* per-viewer only */ }
+  }, []);
+  const setWidgetTop = (top: boolean) => {
+    setWidgetTopState(top);
+    try { localStorage.setItem("burner-upcoming-position", top ? "top" : "bottom"); } catch { /* per-viewer only */ }
+  };
   const [demo, setDemo] = useState(false);
   const inboxRef = useRef<HTMLDivElement>(null);
 
@@ -1203,6 +1265,20 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     } finally {
       setCapturing(false);
       captureLock.current = false;
+    }
+  };
+
+  const createEvent = async () => {
+    const title = eventCapture.trim();
+    if (!title || !data) return;
+    try {
+      const result = demo ? { item: { ...sampleBoard().items[0], id: crypto.randomUUID(), title, collection: null, priority: 0, itemType: "Event" } } : await boardRequest({ action: "create", title });
+      setData(current => current ? { ...current, items: [result.item, ...current.items] } : current);
+      setEventCapture("");
+      if (!demo) await saveItem(result.item.id, { itemType: "Event", priority: 0 });
+      toast.success("Event added.", { action: { label: "Edit details", onClick: () => setSelectedId(result.item.id) } });
+    } catch (captureError) {
+      toast.error(captureError instanceof Error ? captureError.message : "Could not add that event.");
     }
   };
 
@@ -1393,6 +1469,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <TabsList>
             <TabsTrigger value="home"><CalendarClock />Home</TabsTrigger>
             <TabsTrigger value="organize"><ListChecks />Organize</TabsTrigger>
+            <TabsTrigger value="calendar"><CalendarDays />Calendar</TabsTrigger>
             <TabsTrigger value="reminders"><BellRing />Reminders</TabsTrigger>
             <TabsTrigger value="completed"><Trophy />Finished</TabsTrigger>
           </TabsList>
@@ -1401,6 +1478,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           ? "Your pinned lists are first. Move tasks, reorder lists, and use Manage to change each list’s settings."
           : mode === "organize"
             ? "A focused pass through your tasks. Save, skip, or undo."
+            : mode === "calendar"
+            ? "Recurring events and things you want to track on a calendar. They stay out of your lists."
             : mode === "reminders"
             ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
             : "Completed tasks count toward your productivity history. Archived items stay recoverable."}</p>
@@ -1434,13 +1513,14 @@ export default function BoardApp({ displayName }: { displayName: string }) {
 
       {mode === "organize" ? <OrganizeMode items={data.items} lists={data.lists} onSave={saveItem} onHome={() => setMode("home")} /> : mode === "home" ? (
         <section className="collections-wrap" ref={inboxRef}>
-          {!data.lists.some(list => list.rule === "inbox") && filtered.some(item => !item.collection) && (
+          {widgetTop && <UpcomingWidget items={openItems} position="top" onOpen={(item) => setSelectedId(item.id)} onMove={() => setWidgetTop(false)} />}
+          {!data.lists.some(list => list.rule === "inbox") && filtered.some(item => !item.collection && item.itemType !== "Event") && (
             <TaskTable title="Unfiled tasks" note="These tasks have no list. Move them into a list, or set any list’s Tasks shown setting to Unfiled tasks."
-              items={filtered.filter(item => !item.collection)} icon={Inbox} empty="No unfiled tasks"
+              items={filtered.filter(item => !item.collection && item.itemType !== "Event")} icon={Inbox} empty="No unfiled tasks"
               collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} />
           )}
           <CollectionsView
-            items={filtered}
+            items={filtered.filter(item => item.itemType !== "Event")}
             allItems={data.items}
             lists={data.lists}
             onCreateList={(name, type) => void createList(name, type)}
@@ -1453,6 +1533,26 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onUnlinkItem={(id) => void unlinkItem(id)}
             onDisbandGroup={(id) => void disbandGroup(id)}
             onDeleteItem={(id) => void deleteItem(id)}
+          />
+          {!widgetTop && <UpcomingWidget items={openItems} position="bottom" onOpen={(item) => setSelectedId(item.id)} onMove={() => setWidgetTop(true)} />}
+        </section>
+      ) : mode === "calendar" ? (
+        <section className="dashboard-wrap single-table-wrap">
+          <div className="capture-box calendar-capture">
+            <CalendarDays />
+            <input value={eventCapture} onChange={(event) => setEventCapture(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) void createEvent(); }} placeholder="Add an event or recurring reminder..." aria-label="Add event" />
+            <button type="button" onClick={() => void createEvent()} disabled={!eventCapture.trim()}>Add</button>
+          </div>
+          <TaskTable
+            collections={data.collections}
+            empty="No events yet. Add one above, or set a task's type to Event."
+            icon={CalendarDays}
+            items={filtered.filter(item => item.itemType === "Event").sort((a, b) => (plannedDate(a) || "9999").localeCompare(plannedDate(b) || "9999"))}
+            note="Sorted by date. Repeat rules keep these off your task lists."
+            onOpen={(item) => setSelectedId(item.id)}
+            onSave={(id, changes) => void saveItem(id, changes)}
+            onDelete={(id) => void deleteItem(id)}
+            title="Events"
           />
         </section>
       ) : mode === "reminders" ? (

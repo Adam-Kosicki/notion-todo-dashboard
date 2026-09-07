@@ -32,6 +32,8 @@ export function plannedDate(item: BoardItem) {
 }
 
 export function belongsToList(item: BoardItem, list: BoardList, lists: BoardList[], now = new Date()) {
+  // Events live on the dedicated calendar page, never inside a regular list.
+  if (item.itemType === "Event") return false;
   if (item.collection === list.name) return true;
   const rule = list.rule || "manual";
   if (rule === "manual") return false;
