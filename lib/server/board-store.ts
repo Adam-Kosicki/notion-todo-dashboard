@@ -70,6 +70,8 @@ export async function requireOwnerId() {
   const requestHeaders = await headers();
   const oaiId = requestHeaders.get("oai-authenticated-user-id");
   if (oaiId) return oaiId;
+  const oaiEmail = requestHeaders.get("oai-authenticated-user-email");
+  if (oaiEmail) return oaiEmail.toLowerCase();
   // Cloudflare Access strips any client-supplied Cf-Access-* header at the edge and
   // only sets this one itself after a successful login to an Access-protected
   // hostname, so it's safe to trust directly at the origin without JWT verification.
