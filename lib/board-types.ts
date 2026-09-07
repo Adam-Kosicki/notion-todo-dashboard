@@ -37,7 +37,7 @@ export type BoardItem = {
 
 export type RelationOption = { id: string; label: string; value: string };
 
-export const ITEM_TYPES = ["Task", "Goal", "Reminder", "Purchase", "List item", "Someday", "Reference"];
+export const ITEM_TYPES = ["Task", "Goal", "Reminder", "Event", "Purchase", "List item", "Someday", "Reference"];
 
 export type ListType = "general" | "goal" | "shopping" | "recurring_payment" | "reference";
 

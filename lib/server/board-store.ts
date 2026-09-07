@@ -212,7 +212,7 @@ function importedPriority(input: {
   if (input.burner === "Someday") return 0;
   if (rawNumber !== null && Number.isFinite(rawNumber)) return normalizedPriority(rawNumber);
   if (["Grocery", "Wish List", "Bucket List", "Monthly Payments", "Warranties"].includes(input.collection || "")) return 0;
-  if (["Goal", "Someday", "Reference"].includes(input.itemType)) return 0;
+  if (["Goal", "Someday", "Reference", "Event"].includes(input.itemType)) return 0;
   return null;
 }
 
@@ -867,7 +867,7 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
     if (listRow?.default_item_type) normalizedChanges.itemType = listRow.default_item_type;
   }
 
-  const nonPriorityTypes = ["Goal", "Reminder", "Purchase", "List item", "Someday", "Reference"];
+  const nonPriorityTypes = ["Goal", "Reminder", "Event", "Purchase", "List item", "Someday", "Reference"];
   if (normalizedChanges.itemType && nonPriorityTypes.includes(normalizedChanges.itemType) && !("priority" in normalizedChanges)) {
     normalizedChanges.priority = 0;
   }

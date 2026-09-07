@@ -394,7 +394,7 @@ function QuickEditor({ item, collections, allTags, onSave }: {
         <label className="quick-field"><span>List</span><input key={`${item.updatedAt}:collection`} list={`collections-${item.id}`} defaultValue={item.collection || ""} placeholder="No list" onBlur={(event) => commitText("collection", event.currentTarget.value)} /><datalist id={`collections-${item.id}`}>{collections.map((collection) => <option key={collection} value={collection} />)}</datalist></label>
         <label className="quick-field"><span>Type</span><select value={item.itemType} onChange={(event) => onSave(item.id, { itemType: event.currentTarget.value, ...(!usesPriority(event.currentTarget.value) ? { priority: 0 } : {}) })}>{ITEM_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
         <label className="quick-field quick-details-field"><span>Details</span><input key={`${item.updatedAt}:notes`} defaultValue={item.originalNotes || ""} placeholder="Add a short note" onBlur={(event) => commitText("originalNotes", event.currentTarget.value)} /></label>
-        {item.itemType === "Reminder" && <>
+        {(item.itemType === "Reminder" || item.itemType === "Event") && <>
           <label className="quick-field"><span>Repeat</span><select value={item.recurrence || ""} onChange={(event) => onSave(item.id, { recurrence: event.currentTarget.value || null })}><option value="">Does not repeat</option>{RECURRENCES.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
           <label className="quick-field"><span>Time</span><input type="time" value={item.reminderTime || ""} onChange={(event) => onSave(item.id, { reminderTime: event.currentTarget.value || null })} /></label>
         </>}
@@ -537,7 +537,6 @@ function ListManagePopover({ list, itemCount, onSave, onDelete }: {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const typeDefaults = listTypeDefaults(list.type);
   const priorityMode = list.showPriority === null ? "default" : list.showPriority ? "on" : "off";
-  const goalsMode = list.showLongTermGoals === null ? "default" : list.showLongTermGoals ? "on" : "off";
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setConfirmDelete(false); }}>
       <PopoverTrigger asChild>
@@ -562,16 +561,6 @@ function ListManagePopover({ list, itemCount, onSave, onDelete }: {
             <button type="button" className={priorityMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: false })}>Off</button>
           </div>
         </div>
-        {(list.showPriority ?? typeDefaults.showPriority) && (
-          <div className="list-toggle-row">
-            <span>Long-term goals section</span>
-            <div className="tri-toggle">
-              <button type="button" className={goalsMode === "default" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: null })}>Default ({typeDefaults.showLongTermGoals ? "on" : "off"})</button>
-              <button type="button" className={goalsMode === "on" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: true })}>On</button>
-              <button type="button" className={goalsMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: false })}>Off</button>
-            </div>
-          </div>
-        )}
         {typeDefaults.hasReminderDefault && (
           <label className="quick-field">
             <span>Default reminder</span>
@@ -708,16 +697,11 @@ function CollectionsView({
         const list = listsByName.get(name) || null;
         const typeDefaults = listTypeDefaults(list?.type || "general");
         const showPriority = list?.showPriority ?? typeDefaults.showPriority;
-        const showLongTermGoals = list?.showLongTermGoals ?? typeDefaults.showLongTermGoals;
         const group = (groups.get(name) || []).sort((a, b) => {
           const done = Number(["Done", "Archived"].includes(a.status)) - Number(["Done", "Archived"].includes(b.status));
           return done || (b.priority ?? -1) - (a.priority ?? -1) || effectiveAttention(b) - effectiveAttention(a) || a.title.localeCompare(b.title);
         });
         const openCount = group.filter((item) => !["Done", "Archived"].includes(item.status)).length;
-        const prioritized = group.filter((item) => item.priority !== null && item.priority > 0);
-        const unrated = group.filter((item) => item.priority === null);
-        const longGoals = group.filter((item) => item.priority === 0 && item.itemType === "Goal");
-        const longItems = group.filter((item) => item.priority === 0 && item.itemType !== "Goal");
         const row = (item: BoardItem) => {
           const done = ["Done", "Archived"].includes(item.status);
           const due = dueLabel(item.due || item.scheduledFor);
@@ -821,12 +805,7 @@ function CollectionsView({
             </header>
             {isExpanded && (
               <div className="collection-subtables">
-                {showPriority ? <>
-                  {subtable("Prioritized", prioritized, {}, "priority")}
-                  {subtable("No priority", unrated, { priority: null }, "unrated", true)}
-                  {showLongTermGoals && subtable("Long-term goals", longGoals, { priority: 0, itemType: "Goal" }, "goals", true)}
-                  {subtable(showLongTermGoals ? "Long-term tasks + items" : "Long-term + everything else", longItems, { priority: 0, itemType: "Task" }, "long", true)}
-                </> : subtable("Items", group, {}, "flat", true)}
+                {subtable("Items", group, {}, "flat", true)}
               </div>
             )}
           </section>
@@ -989,7 +968,7 @@ function EditorSheet({
                     <SelectContent>{DATE_MODES.map((mode) => <SelectItem key={mode.value} value={mode.value}>{mode.label}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
-                {item.itemType === "Reminder" && <>
+                {(item.itemType === "Reminder" || item.itemType === "Event") && <>
                   <div>
                     <FieldLabel>Repeat</FieldLabel>
                     <Select value={item.recurrence || "__none__"} onValueChange={(value) => void save({ recurrence: value === "__none__" ? null : value })}>
