@@ -35,7 +35,7 @@ const COLUMN_MAP: Record<string, string> = {
 };
 
 type RuntimeEnv = {
-  DB: any;
+  DB: D1Database;
   APP_SECRET?: string;
   NOTION_ITEMS_DATA_SOURCE_ID?: string;
   NOTION_AREAS_DATA_SOURCE_ID?: string;
