@@ -21,17 +21,16 @@ Try sample board appears on an empty board. Its examples and edits exist only in
 
 Run `npm run test:organizing` for the suggestion and visibility regression tests. Run `npm run typecheck` for TypeScript. Cloudflare runtime declarations are generated in worker-configuration.d.ts using Wrangler; regenerate them when the runtime compatibility configuration changes.
 
-This iteration focuses on capture and organization. The existing Notion/Todoist synchronization implementation remains in place. The previously identified full retry/upload gap is still separate work; this branch does not claim to repair it. The Sites preview uses its own database and has no connection to the existing Cloudflare board's database or integrations.
+This iteration focuses on capture and organization. The existing Notion/Todoist synchronization implementation remains in place. The previously identified full retry/upload gap is still separate work; this branch does not claim to repair it. The Sites preview uses its own database. It can use a server-managed Notion token and data-source ID without sending either value to the browser.
 
 No Obsidian backend or vault access is configured. An Obsidian experiment should evaluate suggestions against manually chosen destinations before introducing another synchronization system.
 
 ## Resume checkpoint (2026-09-07)
 
 - Feature branch: `feature/quick-capture-organize`.
-- Implementation is in place. Five organizing regression tests and TypeScript passed during the initial verification.
-- Local browser verified capture leaves the editor closed; sample suggestions and Save & next work. A real local test task was saved through Organize. Finish checking Undo and persistence after reload, then remove only the disposable local records named `Zz Test buy milk tomorrow` and `Zz Test Grocery`.
-- Local preview processes may need restarting with the Sites preview workflow. Browser handles and short-lived credentials must be reacquired after a session reset.
-- The preview Site has already been registered. Reuse `project_id` in `.openai/hosting.json`; do not create another Site. It uses a separate database from the original board.
-- Still required: final build, push exact source to the Site's source repository, package the build, save a version, deploy privately, and verify deployment status. No successful deployment has been confirmed yet.
-- Two original starter tests previously failed (Node cannot import the Cloudflare runtime; CSS utility assertion). These are separate from the new passing organizing tests.
-- No production task data, integrations, or vault files were copied into this preview. No paid AI calls are implemented.
+- The private preview is deployed at `https://burner-board-organize.ripjaw93.chatgpt.site`.
+- The hosted Notion token can read the configured items data source. The temporary connection-check route used for verification was removed before the final deployment.
+- The app recognizes the server-managed token as a live connection and accepts the authenticated email header supplied by Sites.
+- Open Connections and choose Sync now to import Notion items into the preview's separate database.
+- Five organizing regression tests, TypeScript, and the production build pass.
+- The previously noted full retry/upload gap remains separate work. No paid AI calls or Obsidian vault access are implemented.
