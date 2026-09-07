@@ -30,10 +30,13 @@ Documented here as it exists today; this is not a settled design._
 A classification on a List (`general`, `goal`, `shopping`, `recurring_payment`, `reference`)
 that supplies *default* field-visibility for that List — e.g. whether the priority slider or
 long-term-goal grouping make sense to show. A List can always override its Type's defaults.
-Assigning an Item to a List can soft-prefill that Item's ItemType from the List's default, but
-List Type never retroactively reclassifies Items already in the List. Whether List Type should
-exist at all, versus moving "what kind of thing is this" onto the Item exclusively, is an open
-question — do not treat this term as resolved.
+New Lists default straight to `general` with no Type choice up front (Phase 2 of
+`docs/plans/burner-board-roadmap.md`) — Type stays available afterward for anyone who wants it.
+List Type never retroactively reclassifies Items already in the List, and (also Phase 2) no
+longer soft-prefills an Item's ItemType when it's assigned to the List either — list assignment
+changes membership only now. Whether List Type should exist at all, versus moving "what kind of
+thing is this" onto the Item exclusively, is still an open question — do not treat this term as
+resolved.
 
 **Group**:
 A hard bundling of several Items into one unit that moves together and shares a single combined
@@ -50,14 +53,19 @@ The default landing page: Inbox, then Today, This week, and Longer, then every L
 collapsed card. The single destination for both "what needs sorting" and "browse my Lists" —
 there is no separate destination for either.
 
-**Inbox**:
-The set of Items with no Priority and no List, Area, Project, Goal, or Context — every quick
-capture lands here by default, since a fresh capture sets none of those fields. Not a stored
-flag: an Item leaves Inbox automatically the moment any one of those fields is set.
+**Needs review**:
+An Item still needing a first pass: `Task`-typed, no Priority, no List, no due/scheduled date.
+Renamed from "Inbox" (Phase 2) for clarity — the old name collided with the unrelated
+`ListRule` value `"inbox"` used by pinned Inbox-style Lists. Not a stored flag: an Item leaves
+this set automatically the moment any of those fields is set. Distinct from **Unfiled**
+(no List, regardless of the other fields) — both are separate filters now, where "Needs
+review" used to be the only one.
+_Avoid_: Inbox (the prior name for this concept — still used for the `ListRule` value and any
+pinned List built on it, which is a different thing).
 
 **Calendar**:
-The dedicated page for `Event`-type Items. Events never appear inside a regular List — Calendar
-is their only home.
+The dedicated page for `Event`-type Items. Since Phase 2, Events can also live in a mixed List —
+Calendar is a projection (another way to find them), not their exclusive home.
 
 **Goals**:
 The dedicated page listing every `Goal`-type Item, regardless of any individual List's

@@ -32,8 +32,10 @@ export function plannedDate(item: BoardItem) {
 }
 
 export function belongsToList(item: BoardItem, list: BoardList, lists: BoardList[], now = new Date()) {
-  // Events live on the dedicated calendar page, never inside a regular list.
-  if (item.itemType === "Event") return false;
+  // Phase 2 (docs/plans/burner-board-roadmap.md, domain rule 4): Events can live in a mixed
+  // List and still show on Calendar - Calendar is a projection, not an exclusive destination.
+  // Reverses this session's earlier hard exclusion; ADR 0003 topic 1 already flagged the old
+  // "different item types get different placement rules" behavior as itself confusing.
   if (item.collection === list.name) return true;
   const rule = list.rule || "manual";
   if (rule === "manual") return false;
@@ -54,7 +56,12 @@ export function listMoveChanges(list: BoardList, now = new Date()): EditableChan
   if (list.rule === "week") changes.scheduledFor = weekEnd;
   if (list.rule === "longer") changes.scheduledFor = nextWeek;
   // Due dates describe commitments; moving a task never silently erases them.
-  if (list.defaultItemType) changes.itemType = list.defaultItemType;
+  // Phase 2 (docs/plans/burner-board-roadmap.md, domain rule 3): list moves change membership
+  // only now - a list's defaultItemType no longer auto-applies itemType on assignment. There is
+  // no separate "create directly into a list" path today (capture always starts unfiled; every
+  // list assignment goes through this same move path), so this removes the soft-prefill
+  // entirely, not just for drag-moves specifically. list.defaultItemType stays stored and
+  // editable in ListManagePopover for a future explicit-assist feature; it's just inert here now.
   return changes;
 }
 

@@ -46,7 +46,10 @@ Lists are a real, per-owner entity (`lists` table), not just derived strings. Ea
 
 Manage a list — rename, change type, toggle visibility, set a default item type, or delete — from the gear icon on its card header. Reorder lists by dragging a card's header onto another (drop position becomes the new position, same as a normal list reorder). List-level fields (type, visibility overrides, reminder default, default item type, sort order) are local-only and do not round-trip to Notion, since they have no corresponding Notion property — only each item's own `collection` string does. Deleting a list is permanent (no archive state for lists); any items still in it fall back to no list rather than being deleted.
 
-**Default item type** is a soft pre-fill, not a rule: when an item is newly assigned to a list with one set, its `itemType` is set to that default — but only if the same save doesn't already explicitly set `itemType` (an explicit choice always wins), and existing items already in the list are never retroactively rewritten.
+**Default item type** is stored per list and still editable from Manage, but as of Phase 2 of
+`docs/plans/burner-board-roadmap.md` it no longer auto-applies anywhere — assigning an item to a
+list changes membership only now, never `itemType`. New lists also default straight to General
+with no Type prompt up front; List Type stays available afterward from a list's Manage popover.
 
 ## Tags
 
