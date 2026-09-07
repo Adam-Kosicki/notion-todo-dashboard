@@ -10,8 +10,15 @@ This public source tree contains no user records, provider tokens, database cont
 
 Required runtime values:
 
-- `APP_SECRET`: a base64-encoded AES key used to encrypt integration tokens at rest.
 - `NOTION_ITEMS_DATA_SOURCE_ID`: the Notion data-source ID that stores tasks.
+
+Recommended for a private deployment:
+
+- `NOTION_INTEGRATION_ACCESS_TOKEN`: the server-side Notion integration secret. When present, the app connects without asking the user to paste a token.
+
+Required only when users paste provider tokens into the Connections screen:
+
+- `APP_SECRET`: a base64-encoded AES key used to encrypt those tokens at rest.
 
 Optional runtime values enable relation lookups:
 

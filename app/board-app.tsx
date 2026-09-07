@@ -50,7 +50,12 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
 import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type RelationOption } from "@/lib/board-types";
 
-type BoardMode = "home" | "reminders" | "completed";
+import OrganizeMode from "./organize-mode";
+import "./organize.css";
+import { needsOrganization } from "@/lib/organizing";
+import { sampleBoard } from "@/lib/sample-board";
+
+type BoardMode = "home" | "organize" | "reminders" | "completed";
 
 const STATUSES = ["Not started", "In progress", "Done", "Archived"];
 const ENERGIES = ["High focus", "Medium", "Low / admin"];
@@ -84,7 +89,10 @@ async function boardRequest(body?: unknown) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   } : undefined);
-  const payload = await response.json();
+  const payload = await response.json() as BoardPayload & {
+    item: BoardItem; list: BoardList; reassignedCount: number; pulled: number; error?: string;
+    sync?: { notion: boolean | null; todoist: boolean | null; message?: string };
+  };
   if (!response.ok) throw new Error(payload.error || "The board could not finish that change.");
   return payload;
 }
@@ -139,7 +147,7 @@ function weekEndIso() {
   const date = new Date();
   date.setHours(0, 0, 0, 0);
   const remaining = (7 - date.getDay()) % 7;
-  date.setDate(date.getDate() + (remaining || 7));
+  date.setDate(date.getDate() + remaining);
   return localIso(date);
 }
 
@@ -161,15 +169,7 @@ function isThisWeekItem(item: BoardItem) {
   return itemDates(item).some((date) => date > today && date <= weekEnd);
 }
 
-function needsPriority(item: BoardItem) {
-  return item.priority === null
-    && item.itemType === "Task"
-    && !item.collection
-    && !item.area
-    && !item.project
-    && !item.goal
-    && !item.context;
-}
+const needsPriority = needsOrganization;
 
 function usesPriority(itemType: string) {
   return itemType === "Task";
@@ -550,7 +550,7 @@ function ListManagePopover({ list, itemCount, onSave, onDelete }: {
         </label>
         <label className="quick-field">
           <span>List type</span>
-          <select value={list.type} onChange={(event) => onSave(list.id, { type: event.currentTarget.value })}>
+          <select value={list.type} onChange={(event) => onSave(list.id, { type: event.currentTarget.value as BoardList["type"] })}>
             {LIST_TYPES.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
           </select>
         </label>
@@ -878,7 +878,7 @@ function EditorSheet({
   collections: string[];
   connections: BoardPayload["connections"];
   onOpenChange: (open: boolean) => void;
-  onSave: (id: string, changes: EditableChanges) => Promise<void>;
+  onSave: (id: string, changes: EditableChanges) => Promise<unknown>;
   onNeedConnection: () => void;
 }) {
   const [removeTodoist, setRemoveTodoist] = useState(false);
@@ -1130,7 +1130,7 @@ function ConnectionsSheet({
           <SheetDescription>Your export is already loaded. Connect services when you want live write-back.</SheetDescription>
         </SheetHeader>
         <div className="connections-scroll">
-          <div className="privacy-note"><CircleAlert /><p>The ChatGPT Notion connector cannot pass its login into a separate Site. These tokens are encrypted before this app stores them.</p></div>
+          <div className="privacy-note"><CircleAlert /><p>Server-managed integration secrets never reach your browser. Tokens pasted here are encrypted before storage.</p></div>
 
           <section className="connection-card">
             <div className="connection-heading">
@@ -1141,7 +1141,11 @@ function ConnectionsSheet({
             {data.connections.notion ? (
               <div className="connection-actions">
                 <Button onClick={() => void sync()} disabled={busy === "sync"}><RefreshCw className={busy === "sync" ? "animate-spin" : ""} />Sync now</Button>
-                <Button variant="outline" onClick={() => void disconnect("notion")} disabled={busy === "notion"}>Disconnect</Button>
+                {data.connections.notionManaged ? (
+                  <span className="managed-connection">Managed by this Site</span>
+                ) : (
+                  <Button variant="outline" onClick={() => void disconnect("notion")} disabled={busy === "notion"}>Disconnect</Button>
+                )}
               </div>
             ) : (
               <div className="token-form">
@@ -1197,6 +1201,9 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const [area, setArea] = useState("all");
   const [capture, setCapture] = useState("");
   const [capturing, setCapturing] = useState(false);
+  const captureRef = useRef<HTMLInputElement>(null);
+  const captureLock = useRef(false);
+  const [demo, setDemo] = useState(false);
   const inboxRef = useRef<HTMLDivElement>(null);
 
   const load = async () => {
@@ -1241,7 +1248,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       if (view === "done" && !["Done", "Archived"].includes(item.status)) return false;
       if (source !== "all" && item.source !== source) return false;
       if (area !== "all" && item.area !== area) return false;
-      if (query && ![item.title, item.originalNotes, item.collection, item.area, item.project, item.goal].filter(Boolean).join(" ").toLowerCase().includes(query)) return false;
+      if (query && ![item.title, item.originalNotes, item.collection, item.area, item.project, item.goal, item.tags, item.context].filter(Boolean).join(" ").toLowerCase().includes(query)) return false;
       return true;
     });
   }, [data, search, view, source, area]);
@@ -1254,7 +1261,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     return {
       today,
       week,
-      longer: openGrouped.filter((item) => !isTodayItem(item) && !isThisWeekItem(item) && item.itemType !== "Reminder" && item.priority !== null && item.priority > 0).sort(urgencySort),
+      longer: openGrouped.filter((item) => !isTodayItem(item) && !isThisWeekItem(item) && item.itemType !== "Reminder" && ((item.priority !== null && item.priority > 0) || Boolean(item.due || item.scheduledFor))).sort(urgencySort),
       triage: open.filter(needsPriority).sort(attentionSort),
       reminders: open.filter((item) => item.itemType === "Reminder").sort(urgencySort),
       done: filtered.filter((item) => item.status === "Done").sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt)),
@@ -1272,8 +1279,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const completedThisMonth = completedItems.filter((item) => inputDate(item.completedAt).startsWith(localIso().slice(0, 7))).length;
 
   const saveItem = async (id: string, changes: EditableChanges) => {
-    if (!data) return;
-    setData({ ...data, items: data.items.map((item) => item.id === id ? { ...item, ...changes, dirty: !data.connections.notion } : item) });
+    if (!data) return false;
+    if (demo) {
+      setData(current => current ? { ...current, items: current.items.map(item => item.id === id ? { ...item, ...changes, dirty: false } : item) } : current);
+      return true;
+    }
+    setData(current => current ? { ...current, items: current.items.map(item => item.id === id ? { ...item, ...changes, dirty: true } : item) } : current);
     try {
       const result = await boardRequest({ action: "update", id, changes });
       setData((current) => current ? {
@@ -1285,31 +1296,36 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       } : current);
       if (result.sync?.message) toast.warning(result.sync.message);
       else if (result.sync?.notion === false) toast.warning("Saved here. Notion will need a retry.");
+      return true;
     } catch (saveError) {
       toast.error(saveError instanceof Error ? saveError.message : "The change did not save.");
       await load();
+      return false;
     }
   };
 
   const create = async () => {
     const title = capture.trim();
-    if (!title || !data) return;
+    if (!title || !data || captureLock.current) return;
+    captureLock.current = true;
     setCapturing(true);
     try {
-      const result = await boardRequest({ action: "create", title });
-      setData({ ...data, items: [result.item, ...data.items] });
-      setCapture("");
-      setSelectedId(result.item.id);
-      toast.success(data.connections.notion ? "Added to Notion." : "Captured here. Give it a 0–10 rating when you are ready.");
+      const result = demo ? { item: { ...sampleBoard().items[0], id: crypto.randomUUID(), title, collection: null, priority: null } } : await boardRequest({ action: "create", title });
+      setData(current => current ? { ...current, items: [result.item, ...current.items] } : current);
+      setCapture(current => current.trim() === title ? "" : current);
+      captureRef.current?.focus();
+      toast.success("Captured. Organize it whenever you’re ready.", { action: { label: "Edit details", onClick: () => setSelectedId(result.item.id) } });
     } catch (captureError) {
       toast.error(captureError instanceof Error ? captureError.message : "Capture failed.");
     } finally {
       setCapturing(false);
+      captureLock.current = false;
     }
   };
 
   const createList = async (name: string, type: string) => {
     if (!data) return;
+    if (demo) { setData(current => current ? { ...current, lists: [...current.lists, { id: crypto.randomUUID(), name, type: type as BoardList["type"], showPriority: null, showLongTermGoals: null, reminderDefault: null, defaultItemType: null, sortOrder: current.lists.length }], collections: [...current.collections, name] } : current); return; }
     try {
       const result = await boardRequest({ action: "list_create", name, type });
       setData((current) => current ? { ...current, lists: [...current.lists, result.list].sort((a, b) => a.name.localeCompare(b.name)) } : current);
@@ -1320,6 +1336,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const saveList = async (id: string, listChanges: EditableList) => {
+    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     try {
       const result = await boardRequest({ action: "list_update", id, listChanges });
@@ -1330,6 +1347,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const reorderLists = async (orderedIds: string[]) => {
+    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     const previousLists = data.lists;
     // Optimistic: renumber locally by the same index scheme the server will assign,
@@ -1351,6 +1369,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const deleteList = async (id: string) => {
+    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     const list = data.lists.find((entry) => entry.id === id);
     try {
@@ -1374,6 +1393,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const mergeItems = async (draggedId: string, targetId: string) => {
+    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     try {
       const result = await boardRequest({ action: "merge_items", id: draggedId, targetId });
@@ -1384,6 +1404,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const unlinkItem = async (id: string) => {
+    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     try {
       const result = await boardRequest({ action: "unlink_item", id });
@@ -1394,6 +1415,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   const disbandGroup = async (anchorId: string) => {
+    if (demo) { toast.info("Exit the sample board to manage real lists and groups."); return; }
     if (!data) return;
     try {
       const result = await boardRequest({ action: "disband_group", id: anchorId });
@@ -1437,14 +1459,15 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         </div>
         <div className="sync-cluster">
           <span className={data.connections.notion ? "sync-state live" : "sync-state snapshot"}><span />{data.connections.notion ? "Notion live" : "Snapshot"}</span>
-          <button type="button" className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Open connections"><Settings2 /></button>
+          <button type="button" className="icon-button" onClick={() => demo ? toast.info("Exit the sample board to manage connections.") : setSettingsOpen(true)} aria-label="Open connections"><Settings2 /></button>
         </div>
       </header>
 
-      <section className="command-deck">
+      {demo ? <div className="demo-banner"><span>Sample board · Changes here are temporary.</span><Button variant="ghost" onClick={() => { setDemo(false); setMode("home"); void load(); }}>Exit sample board</Button></div> : !data.items.length && <div className="demo-banner"><span>Try the new organizing flow with a few example tasks.</span><Button variant="outline" onClick={() => { setDemo(true); setData(sampleBoard()); setMode("organize"); }}>Try sample board</Button></div>}
+      {mode !== "organize" && <section className="command-deck">
         <div className="capture-box">
           <Plus />
-          <input value={capture} onChange={(event) => setCapture(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void create(); }} placeholder="Capture something before it disappears..." aria-label="Quick capture" />
+          <input ref={captureRef} value={capture} onChange={(event) => setCapture(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) void create(); }} placeholder="Capture something before it disappears..." aria-label="Quick capture" />
           <button type="button" onClick={() => void create()} disabled={!capture.trim() || capturing}>{capturing ? <Loader2 className="animate-spin" /> : "Add"}</button>
         </div>
         <div className="stat-strip">
@@ -1453,7 +1476,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <button type="button" className="front-stat" onClick={() => { setMode("reminders"); setView("active"); }}><span>{stats.reminders}</span>Reminders</button>
           <button type="button" className="todoist-stat" onClick={() => { setMode("completed"); setView("all"); }}><span>{stats.completed}</span>Finished</button>
         </div>
-      </section>
+      </section>}
 
       <section className="view-switcher">
         <Tabs value={mode} onValueChange={(value) => {
@@ -1462,24 +1485,27 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         }}>
           <TabsList>
             <TabsTrigger value="home"><CalendarClock />Home</TabsTrigger>
+            <TabsTrigger value="organize"><ListChecks />Organize</TabsTrigger>
             <TabsTrigger value="reminders"><BellRing />Reminders</TabsTrigger>
             <TabsTrigger value="completed"><Trophy />Finished</TabsTrigger>
           </TabsList>
         </Tabs>
         <p>{mode === "home"
           ? "Inbox, then today, this week, and longer. Your lists are below — expand any of them."
-          : mode === "reminders"
+          : mode === "organize"
+            ? "A focused pass through your tasks. Save, skip, or undo."
+            : mode === "reminders"
             ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
             : "Completed tasks count toward your productivity history. Archived items stay recoverable."}</p>
       </section>
 
-      <section className="filterbar">
+      {mode !== "organize" && <section className="filterbar">
         <div className="search-box"><Search /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks, lists, notes..." /></div>
         <Select value={view} onValueChange={setView}>
           <SelectTrigger className="filter-select"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="active">Open items</SelectItem>
-            <SelectItem value="unrated">Needs priority</SelectItem>
+            <SelectItem value="unrated">Inbox</SelectItem>
             <SelectItem value="no_due">No due date</SelectItem>
             <SelectItem value="todoist">In Todoist</SelectItem>
             <SelectItem value="starred">Starred</SelectItem>
@@ -1496,19 +1522,19 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           <SelectTrigger className="filter-select area-filter"><SelectValue placeholder="All areas" /></SelectTrigger>
           <SelectContent><SelectItem value="all">All areas</SelectItem>{data.relations.areas.map((option) => <SelectItem value={option.value} key={option.id}>{option.label}</SelectItem>)}</SelectContent>
         </Select>
-        <span className="result-count">{filtered.length} shown</span>
-      </section>
+        <span className="result-count">{filtered.length} matching</span>
+      </section>}
 
-      {mode === "home" ? (
+      {mode === "organize" ? <OrganizeMode items={data.items} lists={data.lists} onSave={saveItem} onHome={() => setMode("home")} /> : mode === "home" ? (
         <>
           <section className="dashboard-wrap prioritize-wrap" ref={inboxRef}>
             <TaskTable
               allTags={allTags}
               collections={data.collections}
-              empty="Nothing new to sort — everything has a priority, list, or connection"
+              empty="Nothing waiting here. Capture a thought above."
               icon={Inbox}
               items={dashboard.triage}
-              note="No priority and no list, area, project, goal, or context — where new captures land until sorted"
+              note="Unfiled and unscheduled. Add context freely; tasks stay here until placed."
               onDrop={(id) => void saveItem(id, { priority: null })}
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
@@ -1538,7 +1564,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
                 empty="Nothing scheduled for the rest of this week"
                 icon={Zap}
                 items={dashboard.week}
-                note={`Tomorrow through ${dueLabel(weekEndIso())}`}
+                note={weekEndIso() === localIso() ? "The week ends today. Next week appears in Longer." : `Tomorrow through ${dueLabel(weekEndIso())}`}
                 onDisbandGroup={(id) => void disbandGroup(id)}
                 onDrop={(id) => void saveItem(id, { scheduledFor: weekEndIso() })}
                 onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
@@ -1639,7 +1665,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         connections={data.connections}
         item={selected}
         key={selected?.id || "none"}
-        onNeedConnection={() => setSettingsOpen(true)}
+        onNeedConnection={() => demo ? toast.info("Exit the sample board to manage connections.") : setSettingsOpen(true)}
         onOpenChange={(open) => { if (!open) setSelectedId(null); }}
         onSave={saveItem}
         open={Boolean(selectedId)}
