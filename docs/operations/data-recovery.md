@@ -119,7 +119,7 @@ command, see the bug below) the owner considers current and trustworthy, by chec
 Cloudflare Access application still exists and is still scoped to the owner's email (a dashboard
 check, not a code change).
 
-## Deployment bug found this phase (Cloudflare Workers Builds / Git-connected CI/CD)
+## Deployment bug found and fixed this phase (Cloudflare Workers Builds / Git-connected CI/CD)
 
 The owner reported the automated deploy pipeline (Cloudflare Workers Builds, connected to
 `Adam-Kosicki/notion-todo-dashboard`) failing on `npx wrangler versions upload` with:
@@ -129,24 +129,34 @@ D1 binding 'DB' references database '00000000-0000-4000-8000-000000000000' which
 ```
 
 That id is `SITE_CREATOR_PLACEHOLDER_DATABASE_ID` in `vite.config.ts` — the local-dev fallback
-used when `CF_D1_DATABASE_ID` isn't set. Root cause: the build's configured **Deploy command**
-is plain `npx wrangler versions upload`, with no `--config` flag, so Wrangler falls back to
-whatever `dist/server/wrangler.json` the build produced (baked from `vite.config.ts`'s
-`localBindingConfig`, using the placeholder id) instead of `wrangler.deploy.jsonc` (which has
-the real id, `1e9b149b-32c7-4d64-9cd5-561c0a70e208`). The build log confirms this directly:
-`Original user's configuration: "<no user config found>"`.
+used when `CF_D1_DATABASE_ID` isn't set.
 
-**Fix** (a Cloudflare dashboard change, not a repo file — this project's Build settings, Deploy
-command field): change it to
+**This Worker has two separate Cloudflare Build triggers, not one** (found via the Cloudflare
+API — `GET /accounts/{account_id}/builds/workers/{script_tag}/triggers` — not visible from the
+dashboard screen the owner had open, which only showed one trigger's settings):
+
+- **`main`-branch trigger** (production): `npx wrangler deploy --config wrangler.deploy.jsonc` —
+  already correct. Production was very likely never actually broken; the pasted build log was
+  for a `feature/quick-capture-organize` push, not `main`.
+- **"Deploy non-production branches" trigger** (`branch_includes: ["*"]`,
+  `branch_excludes: ["main"]` — every feature/preview branch): `npx wrangler versions upload`
+  with **no `--config`**, so Wrangler fell back to whatever `dist/server/wrangler.json` the
+  build itself produced (baked from `vite.config.ts`'s local-dev binding config, carrying the
+  placeholder id) instead of `wrangler.deploy.jsonc`. This is the one that was actually broken,
+  on every non-`main` push.
+
+**Fixed 2026-09-07** via the Cloudflare API (`PATCH /accounts/{account_id}/builds/triggers/{trigger_uuid}`,
+trigger `39f87663-c35d-42a3-be20-3b0c9a20f3c2`): changed its `deploy_command` to
 
 ```bash
 npx wrangler versions upload --config wrangler.deploy.jsonc
 ```
 
-This matches the comment already at the top of `wrangler.deploy.jsonc`, which says this file
-exists specifically for the Build settings' deploy command to reference via `--config`. Not yet
-applied — it's a one-line dashboard field edit the owner can make directly; no code change is
-needed on this end.
+matching the production trigger's already-correct pattern, and the comment at the top of
+`wrangler.deploy.jsonc` (which says that file exists for exactly this). **Verified live**, not
+just assumed: triggered a manual build on `feature/quick-capture-organize` after the fix
+(`build_uuid e4cc5e60-75e2-47f0-b9e6-533aec0f0fc8`) — it succeeded, and its logs show
+`env.DB (burner-board-db)` (the real production database), not the placeholder.
 
 ## Summary for Phase 0's acceptance criteria
 
