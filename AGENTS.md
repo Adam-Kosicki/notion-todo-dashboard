@@ -59,6 +59,14 @@ scripts yet — the tests introduced so far (`tests/commands.test.mjs`, `tests/i
 `node --test tests/*.test.mjs`. Introduce the named scripts if a future phase's test volume
 makes the split worth it.
 
+`tests/board-workflows.test.mjs` covers real component interaction (render, click, select,
+assert) via jsdom + `@testing-library/react`, layered on the Vite `ssrLoadModule` pipeline
+`tests/ui-components.test.mjs` already established for loading real `.tsx` files. Install a
+jsdom global environment with `tests/helpers/dom.mjs`'s `installDom()` before importing
+`@testing-library/react`/`react-dom` in a new test file (dynamic `await import(...)` after
+calling it, same pattern as `commands.test.mjs`'s post-`register()` imports) — otherwise
+React and RTL may initialize against the wrong (missing) `document`.
+
 ## Generated files
 
 Do not inspect or modify `worker-configuration.d.ts` unless the task explicitly concerns
