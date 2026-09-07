@@ -77,3 +77,9 @@ Before handing work back for review:
 
 Do not require Astra to reconstruct implementation details from Claude's chat history.
 The repository, roadmap, commits, and handoff summary should contain the durable evidence.
+
+When this handoff is a remediation of blockers from Astra's own prior review, also give Adam a
+short paste-to-Astra refresh note alongside the full handoff doc: what was fixed, the exact
+commit SHA(s), and the handoff doc's path. Scope the ask to the previous blockers and any material
+regression their fixes could have introduced — not a re-audit of already-accepted work. Astra
+re-derives everything else from the repository, not from the note.
