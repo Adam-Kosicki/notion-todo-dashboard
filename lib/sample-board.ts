@@ -29,7 +29,7 @@ export function sampleBoard(): BoardPayload {
       { name: "Projects", type: "general", defaultItemType: "Task" },
       { name: "Someday", type: "reference", defaultItemType: "Someday" },
     ].map((list, index) => ({ ...list, type: list.type as BoardPayload["lists"][number]["type"], id: `sample-list-${index}`, showPriority: null, showLongTermGoals: null, reminderDefault: null, sortOrder: index })),
-    connections: { notion: false, todoist: false },
+    connections: { notion: false, notionManaged: false, todoist: false },
     relations: { areas: [], projects: [], goals: [] },
     collections: ["Grocery", "Career", "Health", "Projects", "Someday"], importedCount: tasks.length,
   };

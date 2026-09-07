@@ -1780,6 +1780,11 @@ input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8); }
 }
 .status-off { background: #242e3a; color: #8d99a7; }
 .connection-actions { display: flex; justify-content: flex-end; margin-top: 14px; gap: 8px; }
+.managed-connection {
+  align-self: center;
+  color: #8d99a7;
+  font-size: 12px;
+}
 .token-form {
   display: flex;
   align-items: flex-start;

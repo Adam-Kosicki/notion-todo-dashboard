@@ -37,6 +37,7 @@ const COLUMN_MAP: Record<string, string> = {
 type RuntimeEnv = {
   DB: D1Database;
   APP_SECRET?: string;
+  NOTION_INTEGRATION_ACCESS_TOKEN?: string;
   NOTION_ITEMS_DATA_SOURCE_ID?: string;
   NOTION_AREAS_DATA_SOURCE_ID?: string;
   NOTION_PROJECTS_DATA_SOURCE_ID?: string;
@@ -47,6 +48,10 @@ type StoredIntegration = { ciphertext: string; iv: string };
 
 function runtime(): RuntimeEnv {
   return env as unknown as RuntimeEnv;
+}
+
+function managedNotionToken() {
+  return runtime().NOTION_INTEGRATION_ACCESS_TOKEN?.trim() || null;
 }
 
 function notionDataSources() {
@@ -507,6 +512,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
   let items = (result.results || []).map(rowToItem);
   const connections = await db.prepare("SELECT provider FROM integrations WHERE owner_id = ?").bind(ownerId).all();
   const providers = new Set((connections.results || []).map((row: any) => row.provider));
+  const notionManaged = Boolean(managedNotionToken());
   const todayQueue = items.filter((item) => belongsInToday(item) && !item.showInTodoist);
   if (todayQueue.length) {
     await db.batch(todayQueue.map((item) => db.prepare(
@@ -522,7 +528,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
   }
   return {
     items,
-    connections: { notion: providers.has("notion"), todoist: providers.has("todoist") },
+    connections: { notion: notionManaged || providers.has("notion"), notionManaged, todoist: providers.has("todoist") },
     relations: {
       areas: collectRelations(items, "area"),
       projects: collectRelations(items, "project"),
@@ -535,6 +541,10 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
 }
 
 async function getIntegration(ownerId: string, provider: "notion" | "todoist") {
+  if (provider === "notion") {
+    const token = managedNotionToken();
+    if (token) return token;
+  }
   const row = await runtime().DB.prepare(
     "SELECT ciphertext, iv FROM integrations WHERE owner_id = ? AND provider = ?",
   ).bind(ownerId, provider).first() as StoredIntegration | null;
@@ -587,6 +597,9 @@ export async function connectProvider(ownerId: string, provider: "notion" | "tod
 }
 
 export async function disconnectProvider(ownerId: string, provider: "notion" | "todoist") {
+  if (provider === "notion" && managedNotionToken()) {
+    throw new Error("This Notion connection is managed by the Site configuration.");
+  }
   await runtime().DB.prepare("DELETE FROM integrations WHERE owner_id = ? AND provider = ?").bind(ownerId, provider).run();
   return { provider, connected: false };
 }

@@ -1130,7 +1130,7 @@ function ConnectionsSheet({
           <SheetDescription>Your export is already loaded. Connect services when you want live write-back.</SheetDescription>
         </SheetHeader>
         <div className="connections-scroll">
-          <div className="privacy-note"><CircleAlert /><p>The ChatGPT Notion connector cannot pass its login into a separate Site. These tokens are encrypted before this app stores them.</p></div>
+          <div className="privacy-note"><CircleAlert /><p>Server-managed integration secrets never reach your browser. Tokens pasted here are encrypted before storage.</p></div>
 
           <section className="connection-card">
             <div className="connection-heading">
@@ -1141,7 +1141,11 @@ function ConnectionsSheet({
             {data.connections.notion ? (
               <div className="connection-actions">
                 <Button onClick={() => void sync()} disabled={busy === "sync"}><RefreshCw className={busy === "sync" ? "animate-spin" : ""} />Sync now</Button>
-                <Button variant="outline" onClick={() => void disconnect("notion")} disabled={busy === "notion"}>Disconnect</Button>
+                {data.connections.notionManaged ? (
+                  <span className="managed-connection">Managed by this Site</span>
+                ) : (
+                  <Button variant="outline" onClick={() => void disconnect("notion")} disabled={busy === "notion"}>Disconnect</Button>
+                )}
               </div>
             ) : (
               <div className="token-form">

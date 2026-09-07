@@ -74,7 +74,7 @@ export type EditableList = Partial<Pick<BoardList, "name" | "type" | "showPriori
 
 export type BoardPayload = {
   items: BoardItem[];
-  connections: { notion: boolean; todoist: boolean };
+  connections: { notion: boolean; notionManaged: boolean; todoist: boolean };
   relations: { areas: RelationOption[]; projects: RelationOption[]; goals: RelationOption[] };
   collections: string[];
   lists: BoardList[];
