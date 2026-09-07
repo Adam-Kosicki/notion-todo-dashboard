@@ -9,6 +9,19 @@ Do not duplicate general repository, Git, privacy, testing, environment, or data
 
 Before sending a final response, use `/unslop` when available.
 
+## Browser access (Claude in Chrome)
+
+Live UI verification against `http://localhost:5174/` requires the session to have been
+started with `claude --chrome` (confirmed via `claude --help`: `--chrome` enables the
+integration, `--no-chrome` disables it). Started without that flag, the
+`mcp__claude-in-chrome__*` tools are simply absent from the tool list for the rest of that
+session — there is no way to enable them mid-session.
+
+If a task calls for live browser verification and those tools aren't available, don't assume
+browser automation is unsupported in this project: check whether the session was started
+without `--chrome`, and if so, tell Adam to relaunch Claude Code with `claude --chrome` from
+this directory.
+
 ## Burner Board roadmap implementation
 
 When explicitly asked to work from `docs/plans/burner-board-roadmap.md`:
