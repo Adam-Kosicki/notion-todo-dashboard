@@ -1,15 +1,27 @@
 # Phase 3 slice 1 handoff (for Astra re-review)
 
-Status: Phase 3 slice 1 (`c02e352`) plus a blocker-remediation follow-up (`7060176`), both on
-`claude-dev`. Astra's first review of `89e5ef1..c02e352` returned **BLOCK - FIX BEFORE SLICE 2**,
-citing three material blockers plus one explicit roadmap-acceptance-criteria gap. All four are
-addressed in `7060176`. **Phase 3 slice 2 has not started** - no slice-2 files exist, no UI
-wiring has begun. This doc exists so Astra can re-review from the repository rather than this
-session's chat history, per `AGENTS.md`'s Astra/Claude handoff protocol.
+Status: Phase 3 slice 1 (`c02e352`) plus two blocker-remediation rounds (`7060176`, `fc8a2a3`),
+all on `claude-dev`. Astra's first review of `89e5ef1..c02e352` returned **BLOCK - FIX BEFORE
+SLICE 2** (three blockers + one roadmap gap, addressed in `7060176`); Astra's second review of
+`7060176^..1698bc8` returned **NOT READY** (three P1 persistence findings + one re-add regression
+left over from round 1, addressed in `fc8a2a3`). **Phase 3 slice 2 has not started** - no slice-2
+files exist, no UI wiring has begun. This doc exists so Astra can re-review from the repository
+rather than this session's chat history, per `AGENTS.md`'s Astra/Claude handoff protocol. See
+"Round 2" below for the second remediation; everything above it is unchanged from round 1's
+original handoff.
 
-Current commit: **`70601763dfb39fa3ffe6b02d341b5625df71103e`** (`7060176` short), branch
-`claude-dev`, pushed to `origin/claude-dev`. Working tree clean except pre-existing untracked
-`.agents/`, `.claude/skills/`, `skills-lock.json` (not part of this work, not modified by it).
+Current commit: **`fc8a2a34a7b509c9e972b0809e93031faede7c42`** (`fc8a2a3` short), branch
+`claude-dev`. Working tree clean except pre-existing untracked `.agents/`, `.claude/skills/`,
+`skills-lock.json` (not part of this work, not modified by it). **Not yet pushed to
+`origin/claude-dev` as of writing this section** - push before sending to Astra.
+
+**Standards note carried over from Astra's second review, not yet resolved:** both round-1
+commits (`7060176`, `1698bc8`) include a `Claude-Session:` URL, which `AGENTS.md` explicitly
+forbids in public commit messages for this repo ("Do not include private AI-session URLs or
+session identifiers in public commit messages"). This came from a session-level default that
+conflicts with that repo rule. Round 2's commit (`fc8a2a3`) omits it, but the two prior commits
+are unchanged - rewriting already-pushed history is a destructive operation this session did not
+take without the owner's explicit authorization. Left for the owner to decide.
 
 ## Astra's blockers, confirmed against the code
 
@@ -196,9 +208,153 @@ stop being theoretical.
   blocker-remediation pass; due whenever slice 2 actually ships user-visible Focus/weekly-progress
   behavior, per the roadmap's instruction 7.
 
+## Round 2: Astra's second review (`7060176^..1698bc8`), findings confirmed and fixed
+
+Astra reviewed the round-1 remediation plus its handoff commit and returned **NOT READY**: three
+P1 persistence findings (spec/implementation) plus one Standards finding. All three P1 findings
+were independently reproduced before any fix, using the technique of wrapping the real D1 test
+adapter's `db.batch()` to inject a competing write at the exact race window a partial fix would
+otherwise miss - not just asserting the final state.
+
+### Findings confirmed
+
+1. **P1 - live completions can still lose their history** (`board-store.ts:892`). Confirmed: the
+   round-1 fix added the `activity_events` INSERT but ran it as a second, separate `.run()` call
+   after the item `UPDATE`. Reproduced: if the INSERT fails, the item is left `Done` with no event,
+   and because the emission condition checks `before.status !== "Done"`, a retry of the same edit
+   no longer detects the transition at all - the completion is permanently lost from weekly
+   reports, not just delayed.
+2. **P1 - concurrent withdrawals can persist success while returning conflict**
+   (`commands.ts:438`). Confirmed: `weekWithdrawPlan`'s bookkeeping `guardSql` checked only
+   `EXISTS (planning_weeks status = 'open')`, while `withdrawWeekCommitmentStmt` (the primary
+   statement) additionally required `withdrawn_at IS NULL`. Reproduced with a `db.batch()` spy
+   that withdraws the same commitment via a raw SQL statement immediately before the real batch
+   runs: the primary UPDATE correctly affected zero rows, but before the fix the weaker
+   bookkeeping guard would have still let the event/receipt land, storing a success receipt for a
+   request that returned CONFLICT - a same-request-ID retry would have replayed that false
+   success.
+3. **P1 - concurrent commands record incorrect revisions** (`commands.ts:536`). Confirmed:
+   `applyAtomicPlan` computed `boardRevision = boardRevisionBefore + 1` from an earlier read, while
+   the SQL bump was a relative `revision = revision + 1` with no precondition tying it to that
+   read. Reproduced with a `db.batch()` spy that bumps `board_state.revision` via raw SQL
+   immediately before the real batch runs, simulating a fully unrelated concurrent command: before
+   the fix, this command would have computed and reported/receipted an incorrect revision number
+   despite the database having moved past it.
+4. **Re-add statistics regression** (`repository.ts:275`, a consequence of round 1's own fix, not
+   present before it). Confirmed and reproduced exactly as Astra described: select Monday, complete
+   Tuesday, withdraw Wednesday, re-add Thursday flipped a legitimately-earned 1/1 to 0/1, because
+   `upsertWeekCommitmentStmt`'s `ON CONFLICT DO UPDATE SET added_at = excluded.added_at` overwrote
+   the timestamp `computeWeekStats`'s on-time check compared the completion against.
+
+### Exact fixes made
+
+**P1 #1** - `lib/server/board-store.ts`'s `updateItem`: the item `UPDATE` and its
+`activity_events` INSERT are now built as unexecuted statements and run together via one
+`(runtime().DB as unknown as Database).batch([updateStmt, activityStmt])` call when a
+complete/reopen transition applies; a plain `.run()` when it doesn't (no event, nothing to batch).
+The cast is needed because the real `D1Database` type requires a `.raw()` method on prepared
+statements that `repository.ts`'s narrower `Database`/`PreparedStatement` interface doesn't
+declare - both the real binding and the test harness already satisfy the narrower interface
+structurally.
+
+**P1 #2** - `lib/server/commands.ts`'s `weekWithdrawPlan`: `guardSql`/`guardParams` now mirror
+`withdrawWeekCommitmentStmt`'s full precondition exactly - `EXISTS (planning_weeks status =
+'open')` **AND** `EXISTS (week_commitments ... AND withdrawn_at IS NULL)` - not just the
+week-open half of it. The `AtomicPlan.guardSql` doc comment now states this as a hard rule for any
+future atomic command: the bookkeeping guard must always be the *exact same* precondition the
+primary statement's own WHERE clause checks, never a subset.
+
+**P1 #3** - `lib/server/repository.ts` gained `revisionGuard(ownerId, expectedBoardRevision)`,
+an `EXISTS (SELECT 1 FROM board_state WHERE owner_id = ? AND revision = ?)` fragment. Every
+atomic-plan handler (`focusSetPlan`, `weekCommitPlan`, `weekWithdrawPlan`, `weekClosePlan`) now
+captures its own `expectedBoardRevision` via `getBoardState` (freshly, as close as practical to
+building the plan - `weekClosePlan` re-reads it *after* its stats computation, right before
+finalizing, to minimize the staleness window for that slower handler) and passes it to the
+repository Stmt-builders (`upsertWeekCommitmentStmt`, `withdrawWeekCommitmentStmt`,
+`finalizeClosedPlanningWeekStmt`, `setFocusItemStmt`, `removeFocusItemStmt`), each of which now
+embeds `revisionGuard` into its own WHERE/SELECT clause alongside its domain precondition.
+`applyAtomicPlan` folds the same `revisionGuard` into the bookkeeping guard (`plan.guardSql AND
+revisionGuard(...)`), so a command's mutation and its board-revision bump now share one
+precondition end to end.
+
+A first attempt at this fix (committed only locally, never pushed) gated the revision-bump
+statement on a direct re-check of `plan.guardSql`'s domain condition and failed its own new
+positive-path test: on a genuine *success*, `primaryStatement` (running immediately before the
+revision bump) had already mutated the very row that domain condition reads, so the revision
+bump's copy of that check read back false right after success - silently skipping the bump while
+`applyAtomicPlan` still returned `success` to the caller. Fixed by gating the revision-bump
+statement on `EXISTS (SELECT 1 FROM command_receipts WHERE owner_id = ? AND request_id = ?)`
+instead: the receipt-insert statement (which runs first, before anything in the batch mutates
+anything) already evaluates the identical combined guard against a genuinely untouched pre-image,
+and nothing later in the batch mutates `command_receipts` - so its presence is a hazard-free proxy
+for "the guard held," safe for a later statement to depend on without re-reading a row something
+else in the same batch may have just changed. `applyAtomicPlan` now determines overall
+success/failure from two independent signals: the receipt statement's own change count (`guardHeld`
+- a "no" is always `CONFLICT`, regardless of `onZeroChanges`) and the primary statement's change
+count (given the guard held, `onZeroChanges` governs whether zero rows is a legitimate no-op).
+
+**Re-add regression** - `lib/domain/progress.ts`'s `computeWeekStats` no longer compares a
+completion against a single `addedAt` snapshot at all (the field was removed from
+`CommitmentInput` as dead). It now accepts `commitmentEvents: CommitmentEventInput[]` (the item's
+full `week.commit`/`week.withdraw` history) and replays it merged chronologically with the
+complete/reopen history, tracking an `isActive` flag (true after a `week.commit`, false after a
+`week.withdraw`); a completion only sets the tracked `completedAt` while `isActive`, and
+`items.reopen` always clears it unconditionally (withdrawing does not - withdrawing isn't
+reopening). An item with zero commit/withdraw history at all (data predating this event's
+introduction) is treated as active throughout, matching the pre-remediation behavior for such
+rows. `week_commitments.added_at` still refreshes on re-add (`upsertWeekCommitmentStmt` unchanged
+in this respect) purely for display purposes - nothing in the statistics computation reads it
+anymore. `lib/server/commands.ts`'s `weekClosePlan` now fetches both `items.complete`/`items.reopen`
+and `week.commit`/`week.withdraw` events in one `listActivityEventsForItems` call (entity_id is the
+item ID for both categories) and splits them before calling `computeWeekStats`.
+
+### Files / symbols changed (round 2, in addition to round 1's table above)
+
+| File | Symbols |
+| --- | --- |
+| `lib/domain/progress.ts` | `CommitmentInput.addedAt` removed (dead); new `CommitmentEventInput` type; `computeWeekStats` gained `commitmentEvents` param and an internal `completionAsOf` replay helper |
+| `lib/server/commands.ts` | `AtomicPlan` gained `expectedBoardRevision` (removed the externally-threaded `boardRevisionBefore` param from `applyAtomicPlan`); `weekWithdrawPlan`'s `guardSql` fixed; `weekClosePlan` fetches/splits commit-vs-status events; `applyAtomicPlan` rewritten around the receipt-as-guard-proxy design |
+| `lib/server/repository.ts` | New: `revisionGuard`, `appendActivityEventStmt` (`appendActivityEvent` is now a thin wrapper over it), `ActivityEventInput` type. Changed: `setFocusItemStmt`, `removeFocusItemStmt`, `upsertWeekCommitmentStmt`, `withdrawWeekCommitmentStmt`, `finalizeClosedPlanningWeekStmt` all gained an `expectedBoardRevision` param and embed `revisionGuard` |
+| `lib/server/board-store.ts` | `updateItem`'s item-UPDATE and activity-event-INSERT now batched atomically |
+| `tests/progress.test.mjs` | Fixtures drop `addedAt`, gain `commitmentEvents`; +1 exact re-add repro, +1 while-withdrawn negative case |
+| `tests/focus-week-commands.test.mjs` | +2 direct concurrency-race reproductions (P1#2, P1#3) via `db.batch()` interception, +1 positive-path revision-persistence test |
+
+### Migrations affected
+
+**None**, same as round 1 - this remains a code-only remediation.
+
+### Focused verification (round 2)
+
+```
+node --test tests/progress.test.mjs
+  -> 14/14 pass (was 12; +1 re-add repro, +1 while-withdrawn negative case)
+
+node --test tests/focus-week-commands.test.mjs
+  -> 15/15 pass (was 12 after round 1; +2 concurrency-race reproductions, +1 revision-persistence
+  positive-path test)
+```
+
+### Full-suite / typecheck / lint (round 2)
+
+```
+npm run typecheck   -> clean, no output
+npm run lint         -> same pre-existing app/board-app.tsx issues as round 1, unchanged
+npm test             -> 82 tests, 80 pass, 2 fail - the same pre-existing, unrelated dev-server
+                        port collision (tests/rendered-html.test.mjs, tests/ui-components.test.mjs)
+                        confirmed against the unmodified baseline in round 1
+```
+
+### Remaining risks (unchanged from round 1, still applicable)
+
+Everything in round 1's "Remaining risks" and "Intentionally deferred" sections above still
+applies unchanged: `items.*`/`lists.*` non-atomicity remains deliberately out of scope
+(unreached by any real owner); legacy hard-delete-vs-Focus/commitment dangling references remain
+a Phase 1/4 cutover concern; `week.close`'s mutual exclusion has no lock timeout/expiry.
+
 ## Exact next unblocked action
 
-Send `70601763dfb39fa3ffe6b02d341b5625df71103e` (or the range `c02e352..7060176`) to Astra for
-re-review. **Phase 3 slice 2 (Focus/weekly-progress UI, roadmap section 8) has not been started**
-- no slice-2 files exist, no `app/board-app.tsx` wiring has begun - pending that re-review's
-outcome, per Adam's explicit instruction not to start it yet.
+Push `fc8a2a3` to `origin/claude-dev`, then send `fc8a2a34a7b509c9e972b0809e93031faede7c42` (or
+the range `7060176^..fc8a2a3` to cover both remediation rounds) to Astra for re-review, along with
+the Claude-Session-URL Standards question above for the owner to decide. **Phase 3 slice 2
+(Focus/weekly-progress UI, roadmap section 8) has not been started** - no slice-2 files exist, no
+`app/board-app.tsx` wiring has begun - pending that re-review's outcome.
