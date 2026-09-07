@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "agent",
+            "if": "Bash(git commit *)",
+            "prompt": "A git commit just ran in this repo. Follow the instructions in .claude/agents/documentation-agent.md, under the 'When you're triggered automatically (after a commit)' section, to check whether docs/ARCHITECTURE.md or CONTEXT.md need updating for this change, and update them if so. Hook input: $ARGUMENTS",
+            "model": "claude-sonnet-5",
+            "timeout": 180,
+            "statusMessage": "Checking architecture docs after commit..."
+          }
+        ]
+      }
+    ]
+  }
+}
