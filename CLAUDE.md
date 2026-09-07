@@ -1,9 +1,35 @@
-# Working conventions for this repo
+@AGENTS.md
+
+# Claude Code-specific instructions
+
+## Communication
+
+Before sending a final response, use `/unslop` when available: plain, direct, human phrasing —
+no AI writing tells ("Here's the thing:", "Let that sink in", em-dash-heavy hedging, unearned
+enthusiasm).
+
+## Burner Board implementation roadmap
+
+When explicitly asked to work from `docs/plans/burner-board-roadmap.md`:
+
+- Implement only the currently authorized phase or coherent slice.
+- Do not begin a future phase simply because it appears in the roadmap.
+- Make routine, reversible engineering decisions yourself.
+- Stop only for material unresolved gates or owner decisions.
+- Continue independent work when one part is blocked.
+- At a phase handoff, report:
+  - phase/slice completed
+  - files changed
+  - migrations
+  - verification commands and actual results
+  - manual verification
+  - unresolved issues
+  - rollback implications
+  - exact next unblocked action
 
 ## Git commits
 
-This is a **public** GitHub repo (owner: `Adam-Kosicki`). From this point forward:
-https://github.com/Adam-Kosicki/notion-todo-dashboard
+This is a **public** GitHub repo (owner: `Adam-Kosicki`): https://github.com/Adam-Kosicki/notion-todo-dashboard
 
 - **Split commits by feature**, not one mega-commit per session. When a session touches several distinct features (e.g. "Lists", "Tags", "UI polish"), commit each separately with its own message, even if that means staging the same shared file more than once across commits as it evolves.
 - If splitting cleanly would require fragile manual patch/hunk surgery (interleaved changes across many shared files, no interactive `git add -p` available), it's fine to fall back to fewer/combined commits rather than risk a broken repo state — but say so explicitly instead of silently skipping the split.
@@ -13,10 +39,6 @@ https://github.com/Adam-Kosicki/notion-todo-dashboard
   - Grep staged/new content for things like `ntn_`, API keys, tokens, passwords before committing, not after.
 - Never commit the local D1 database file or any backup of it (`.wrangler/state/**/*.sqlite*`) — it contains real personal task data and encrypted Notion/Todoist tokens.
 
-## Communication style
-
-- Before sending a chat response, run it through `/unslop`: plain, direct, human phrasing — no AI writing tells ("Here's the thing:", "Let that sink in", em-dash-heavy hedging, unearned enthusiasm).
-
 ## Local dev environment
 
 - `node`/`npm` are not on the default PATH in this environment; a working Node install lives at `D:\DevOps`. Git Bash sessions get this from `~/.bashrc`/`~/.bash_profile` (`export PATH="/d/DevOps:$PATH"`) already — a fresh terminal should just work.
@@ -24,7 +46,7 @@ https://github.com/Adam-Kosicki/notion-todo-dashboard
   ```
   WRANGLER_LOG_PATH=.wrangler/wrangler.log ./node_modules/.bin/vite
   ```
-- The local D1 database (Miniflare-simulated) lives under `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite`. New Drizzle migrations (`npx drizzle-kit generate`) need to be applied to that file by hand with `sqlite3` — there's no `wrangler.toml` in this project (config is inline in `vite.config.ts`), so `wrangler d1 migrations apply` isn't available. Always back up that sqlite file before applying a new migration to it (it holds real data).
+- The local D1 database (Miniflare-simulated) lives under `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite`. New Drizzle migrations (`npx drizzle-kit generate`) are applied to that file with `scripts/migrate-board.mjs` (dry-run/check/apply/seed modes — see `docs/operations/data-recovery.md`); there's no `wrangler.toml` in this project (config is inline in `vite.config.ts`), so `wrangler d1 migrations apply` isn't available. Always back up that sqlite file before applying a new migration to it (it holds real data).
 - This app has a **live Notion connection** in this dev environment. Treat existing items/lists as real data: prefer creating disposable test items/lists (named e.g. `Zz Test ...`) for verification, and clean them up (archive/delete) afterward, rather than editing real rows.
 
 ## Generated files
