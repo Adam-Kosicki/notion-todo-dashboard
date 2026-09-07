@@ -61,5 +61,12 @@ When Adam gives direction on how the project should work or be built — plannin
 concrete implementation request — save his message **verbatim** (his exact wording, not a
 paraphrase) into `docs/adr/local/<topic>.md`, following the format in that folder's README.
 This is separate from writing an ADR: it's the raw source material, kept local-only
-(gitignored, never committed or pushed). Still write/update the polished ADR in `docs/adr/`
-as usual when the topic warrants one — the local file supplements it, it doesn't replace it.
+(gitignored from the main repo, never committed or pushed there). Still write/update the
+polished ADR in `docs/adr/` as usual when the topic warrants one — the local file supplements
+it, it doesn't replace it.
+
+`docs/adr/local/` is itself a separate, independent git repository (no remote — never pushed
+anywhere), specifically so this content survives a `git clean` or general bit-rot in the main
+repo instead of being plain gitignored with zero protection. **After adding or editing anything
+in that folder, also commit it there**: `cd docs/adr/local && git add -A && git commit -m "..."`.
+An uncommitted change in that nested repo has no more protection than before it existed.
