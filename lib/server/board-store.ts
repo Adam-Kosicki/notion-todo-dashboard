@@ -6,6 +6,7 @@ import type { BoardItem, BoardList, BoardPayload, EditableChanges, EditableList,
 import { LIST_RULES, LIST_SORTS, listMoveChanges } from "@/lib/list-behavior";
 import { ITEM_TYPES, LIST_TYPES } from "@/lib/board-types";
 import { requireOwnerId } from "@/lib/server/identity";
+import { appendActivityEvent } from "@/lib/server/repository";
 
 export { requireOwnerId };
 
@@ -891,6 +892,39 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
   await runtime().DB.prepare(
     `UPDATE items SET ${sets.join(", ")}, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?`,
   ).bind(...values, ownerId, id).run();
+
+  // Astra review (Phase 3 Slice 1, c02e352, Blocker A): lib/server/commands.ts's weekClose
+  // reconstructs each committed item's completion history from activity_events, but this legacy
+  // write path - the one the live app actually uses today, since items.complete/items.reopen
+  // aren't wired into app/api/board/route.ts yet - never wrote one. Any completion/reopen done
+  // through the real app was therefore invisible to weekly reports. Emit the same event
+  // types/shape the new command layer uses (see commands.ts's itemsComplete/itemsReopen) so both
+  // paths feed the same history regardless of which one an owner is currently on.
+  if (normalizedChanges.status === "Done" && before.status !== "Done") {
+    await appendActivityEvent(runtime().DB, {
+      id: `evt_${crypto.randomUUID()}`,
+      ownerId,
+      entityId: id,
+      actorKind: "owner",
+      eventType: "items.complete",
+      requestId: null,
+      before: { status: before.status },
+      after: { status: "Done", completedAt: normalizedChanges.completedAt ?? now },
+      timestamp: typeof normalizedChanges.completedAt === "string" ? normalizedChanges.completedAt : now,
+    });
+  } else if ("status" in normalizedChanges && normalizedChanges.status !== "Done" && before.completedAt) {
+    await appendActivityEvent(runtime().DB, {
+      id: `evt_${crypto.randomUUID()}`,
+      ownerId,
+      entityId: id,
+      actorKind: "owner",
+      eventType: "items.reopen",
+      requestId: null,
+      before: { status: before.status, completedAt: before.completedAt },
+      after: { status: normalizedChanges.status },
+      timestamp: now,
+    });
+  }
 
   let item = await findItem(ownerId, id);
   const sync: { notion: boolean | null; message?: string } = { notion: null };

@@ -45,10 +45,11 @@ import {
 } from "@/lib/domain/contracts";
 import { computeWeekStats, weekEndDate, type WeekStats } from "@/lib/domain/progress";
 import {
-  addWeekCommitment,
   appendActivityEvent,
+  beginClosingPlanningWeek,
   bumpBoardRevision,
-  closePlanningWeekRow,
+  ensureBoardState,
+  finalizeClosedPlanningWeekStmt,
   findItemRow,
   findListByName,
   findListRow,
@@ -58,12 +59,14 @@ import {
   getReceipt,
   listActivityEventsForItems,
   listWeekCommitments,
-  removeFocusItem,
+  removeFocusItemStmt,
   saveReceipt,
-  setFocusItem,
-  withdrawWeekCommitment,
+  setFocusItemStmt,
+  upsertWeekCommitmentStmt,
+  withdrawWeekCommitmentStmt,
   type Database,
   type ItemRow,
+  type PreparedStatement,
 } from "@/lib/server/repository";
 
 export { ERROR_STATUS };
@@ -323,28 +326,71 @@ async function listsDelete(db: Database, ownerId: string, input: ListsDeleteInpu
   };
 }
 
-async function focusSet(db: Database, ownerId: string, input: FocusSetInput): Promise<HandlerOutcome<{ itemId: string; focused: boolean }>> {
+// --- Phase 3 atomic commands (focus.*/week.*) -------------------------------------------------
+//
+// Astra review (Phase 3 Slice 1, c02e352, Blocker B): the non-atomic HANDLERS path below runs
+// the mutation, the board-revision bump, the activity-event append, and the receipt save as four
+// separate D1 round trips. Terra's fault injection proved a crash between them leaves a
+// permanently inconsistent state (commitment saved, no event, no receipt; a retry then omits the
+// event forever and double-bumps the revision) and that commit/withdraw can race a concurrent
+// week.close. focus./week. commands instead build an AtomicPlan: one `db.batch()` call carries
+// the mutation *and* its bookkeeping together, and a database-enforced guard (an `EXISTS`
+// subquery baked into every statement's WHERE/SELECT clause, not a separate pre-read) makes the
+// whole batch a no-op together if the precondition no longer holds by the time it runs - see
+// applyAtomicPlan. items./lists. are unaffected: they stay gated behind d1_primary and unreached
+// by any real owner today (see requiresD1Primary), so their pre-existing version of this same
+// weakness is not this slice's concern.
+type AtomicPlan = {
+  /** Raw SQL boolean expression (may reference its own `?` placeholders, filled from
+   * `guardParams`) that must still hold when the batch actually runs. `"1=1"` for commands with
+   * no meaningful race condition to guard against. */
+  guardSql: string;
+  guardParams: unknown[];
+  /** The command's own mutation. Must be ordered so nothing earlier in the batch mutates a row
+   * `guardSql` reads (see week.close's finalize, which mutates the very row its guard reads -
+   * that's why it's built to run last). */
+  primaryStatement: PreparedStatement;
+  result: unknown;
+  changedItemIds: string[];
+  changedListIds: string[];
+  activity: Array<{ entityId: string; eventType: string; before: unknown; after: unknown }>;
+  /** Called only if primaryStatement affected zero rows. `null` means zero rows is still a
+   * legitimate success (e.g. focus.set removing an already-absent item) - never treated as a
+   * failure. */
+  onZeroChanges: (() => CommandError) | null;
+};
+
+type NoopOutcome = { kind: "noop"; outcome: HandlerOutcome<unknown> };
+type AtomicOutcome = { kind: "atomic"; plan: AtomicPlan };
+
+async function focusSetPlan(db: Database, ownerId: string, input: FocusSetInput): Promise<AtomicOutcome> {
   const item = await findItemRow(db, ownerId, input.itemId);
   if (!item) throw new CommandError("VALIDATION_FAILED", "itemId does not refer to an existing item.");
-  if (input.focused) {
-    await setFocusItem(db, ownerId, input.itemId, input.reviewUntil ?? null);
-  } else {
-    await removeFocusItem(db, ownerId, input.itemId);
-  }
+  const now = new Date().toISOString();
+  const primaryStatement = input.focused
+    ? setFocusItemStmt(db, ownerId, input.itemId, input.reviewUntil ?? null, now)
+    : removeFocusItemStmt(db, ownerId, input.itemId);
   return {
-    result: { itemId: input.itemId, focused: input.focused },
-    changedItemIds: [input.itemId],
-    changedListIds: [],
-    activity: [{
-      entityId: input.itemId,
-      eventType: input.focused ? "focus.added" : "focus.removed",
-      before: null,
-      after: input.focused ? { reviewUntil: input.reviewUntil ?? null } : null,
-    }],
+    kind: "atomic",
+    plan: {
+      guardSql: "1=1",
+      guardParams: [],
+      primaryStatement,
+      result: { itemId: input.itemId, focused: input.focused },
+      changedItemIds: [input.itemId],
+      changedListIds: [],
+      activity: [{
+        entityId: input.itemId,
+        eventType: input.focused ? "focus.added" : "focus.removed",
+        before: null,
+        after: input.focused ? { reviewUntil: input.reviewUntil ?? null } : null,
+      }],
+      onZeroChanges: null,
+    },
   };
 }
 
-async function weekCommit(db: Database, ownerId: string, input: WeekCommitInput): Promise<HandlerOutcome<{ weekId: string; itemId: string }>> {
+async function weekCommitPlan(db: Database, ownerId: string, input: WeekCommitInput): Promise<NoopOutcome | AtomicOutcome> {
   const week = await findPlanningWeek(db, ownerId, input.weekId);
   if (!week) throw new CommandError("NOT_FOUND", "Planning week not found.");
   if (week.status === "closed") throw new CommandError("CONFLICT", "This week is closed.");
@@ -354,46 +400,83 @@ async function weekCommit(db: Database, ownerId: string, input: WeekCommitInput)
   const existing = await findWeekCommitment(db, ownerId, input.weekId, input.itemId);
   if (existing && !existing.withdrawn_at) {
     // Already committed and active - idempotent no-op rather than a duplicate row/event.
-    return { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] };
-  }
-  if (existing && existing.withdrawn_at) {
-    throw new CommandError("CONFLICT", "This item was already withdrawn from this week; re-committing it isn't supported yet.");
+    return { kind: "noop", outcome: { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] } };
   }
 
-  await addWeekCommitment(db, ownerId, input.weekId, input.itemId);
+  // Either a brand-new commitment or re-adding a previously withdrawn one - both go through the
+  // same upsert (roadmap Phase 3 acceptance criteria requires add/withdraw/re-add).
+  const now = new Date().toISOString();
   return {
-    result: { weekId: input.weekId, itemId: input.itemId },
-    changedItemIds: [input.itemId],
-    changedListIds: [],
-    activity: [{ entityId: input.itemId, eventType: "week.commit", before: null, after: { weekId: input.weekId } }],
+    kind: "atomic",
+    plan: {
+      guardSql: "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')",
+      guardParams: [ownerId, input.weekId],
+      primaryStatement: upsertWeekCommitmentStmt(db, ownerId, input.weekId, input.itemId, now),
+      result: { weekId: input.weekId, itemId: input.itemId },
+      changedItemIds: [input.itemId],
+      changedListIds: [],
+      activity: [{ entityId: input.itemId, eventType: "week.commit", before: null, after: { weekId: input.weekId } }],
+      onZeroChanges: () => new CommandError("CONFLICT", "This week is closed."),
+    },
   };
 }
 
-async function weekWithdraw(db: Database, ownerId: string, input: WeekWithdrawInput): Promise<HandlerOutcome<{ weekId: string; itemId: string }>> {
+async function weekWithdrawPlan(db: Database, ownerId: string, input: WeekWithdrawInput): Promise<NoopOutcome | AtomicOutcome> {
   const week = await findPlanningWeek(db, ownerId, input.weekId);
   if (!week) throw new CommandError("NOT_FOUND", "Planning week not found.");
   if (week.status === "closed") throw new CommandError("CONFLICT", "This week is closed.");
   const existing = await findWeekCommitment(db, ownerId, input.weekId, input.itemId);
   if (!existing) throw new CommandError("NOT_FOUND", "This item is not committed to this week.");
   if (existing.withdrawn_at) {
-    return { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] };
+    return { kind: "noop", outcome: { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] } };
   }
 
-  await withdrawWeekCommitment(db, ownerId, input.weekId, input.itemId, input.reason ?? null);
+  const now = new Date().toISOString();
   return {
-    result: { weekId: input.weekId, itemId: input.itemId },
-    changedItemIds: [input.itemId],
-    changedListIds: [],
-    activity: [{ entityId: input.itemId, eventType: "week.withdraw", before: null, after: { reason: input.reason ?? null } }],
+    kind: "atomic",
+    plan: {
+      guardSql: "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')",
+      guardParams: [ownerId, input.weekId],
+      primaryStatement: withdrawWeekCommitmentStmt(db, ownerId, input.weekId, input.itemId, input.reason ?? null, now),
+      result: { weekId: input.weekId, itemId: input.itemId },
+      changedItemIds: [input.itemId],
+      changedListIds: [],
+      activity: [{ entityId: input.itemId, eventType: "week.withdraw", before: null, after: { reason: input.reason ?? null } }],
+      onZeroChanges: () => new CommandError("CONFLICT", "This week is closed."),
+    },
   };
 }
 
-async function weekClose(db: Database, ownerId: string, input: WeekCloseInput): Promise<HandlerOutcome<WeekStats>> {
-  const week = await findPlanningWeek(db, ownerId, input.weekId);
+/**
+ * Astra review Blocker B: closing reads commitments/items/events, computes stats in JS, then
+ * writes the frozen snapshot - a read-compute-write sequence that can't be expressed as a single
+ * batch of statements. `beginClosingPlanningWeek` is the database-enforced mutual exclusion that
+ * makes the middle of that sequence safe anyway: it compare-and-swaps the week from 'open' to a
+ * transitional 'closing' state, and week.commit/week.withdraw's own guard (`status = 'open'`)
+ * refuses to run while a week is 'closing' - so nothing can change week_commitments out from
+ * under the computation. If the process crashes after entering 'closing' but before finalizing,
+ * a retry (same or different request) finds status = 'closing' and simply resumes: recompute and
+ * finalize, rather than erroring or leaving the week stuck.
+ */
+async function weekClosePlan(db: Database, ownerId: string, input: WeekCloseInput): Promise<NoopOutcome | AtomicOutcome> {
+  let week = await findPlanningWeek(db, ownerId, input.weekId);
   if (!week) throw new CommandError("NOT_FOUND", "Planning week not found.");
   if (week.status === "closed") {
     // Closing an already-closed week returns the frozen snapshot verbatim - never recomputed.
-    return { result: JSON.parse(week.report_json ?? "null") as WeekStats, changedItemIds: [], changedListIds: [], activity: [] };
+    return { kind: "noop", outcome: { result: JSON.parse(week.report_json ?? "null") as WeekStats, changedItemIds: [], changedListIds: [], activity: [] } };
+  }
+
+  if (week.status !== "closing") {
+    const began = await beginClosingPlanningWeek(db, ownerId, input.weekId);
+    if (!began) {
+      // Lost a race to another concurrent close (or the week was already 'closing') - re-read
+      // and let that other request's outcome decide the answer.
+      week = await findPlanningWeek(db, ownerId, input.weekId);
+      if (week?.status === "closed") {
+        return { kind: "noop", outcome: { result: JSON.parse(week.report_json ?? "null") as WeekStats, changedItemIds: [], changedListIds: [], activity: [] } };
+      }
+      throw new CommandError("CONFLICT", "This week is currently being closed by another request; retry.");
+    }
   }
 
   const commitments = await listWeekCommitments(db, ownerId, input.weekId);
@@ -406,7 +489,7 @@ async function weekClose(db: Database, ownerId: string, input: WeekCloseInput): 
   const events = await listActivityEventsForItems(db, ownerId, itemIds, ["items.complete", "items.reopen"]);
 
   const stats = computeWeekStats({
-    week: { startDate: week.start_date, endDate: weekEndDate(week.start_date) },
+    week: { startDate: week!.start_date, endDate: weekEndDate(week!.start_date), timezone: week!.timezone },
     commitments: commitments.map((commitment) => ({
       itemId: commitment.item_id,
       addedAt: commitment.added_at,
@@ -420,16 +503,103 @@ async function weekClose(db: Database, ownerId: string, input: WeekCloseInput): 
     })),
   });
 
-  await closePlanningWeekRow(db, ownerId, input.weekId, JSON.stringify(stats));
   return {
-    result: stats,
-    changedItemIds: [],
-    changedListIds: [],
-    activity: [{ entityId: input.weekId, eventType: "week.close", before: null, after: stats }],
+    kind: "atomic",
+    plan: {
+      guardSql: "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'closing')",
+      guardParams: [ownerId, input.weekId],
+      primaryStatement: finalizeClosedPlanningWeekStmt(db, ownerId, input.weekId, JSON.stringify(stats)),
+      result: stats,
+      changedItemIds: [],
+      changedListIds: [],
+      activity: [{ entityId: input.weekId, eventType: "week.close", before: null, after: stats }],
+      // Should be unreachable - this request holds the exclusive 'closing' lock it just
+      // confirmed - but a failure here must not be reported as success.
+      onZeroChanges: () => new CommandError("INTERNAL_ERROR", "Failed to finalize the week close."),
+    },
   };
 }
 
-const HANDLERS: Record<CommandAction, (db: Database, ownerId: string, input: never) => Promise<HandlerOutcome<unknown>>> = {
+/** Executes an AtomicPlan as one `db.batch()`: the guard-gated revision bump, guard-gated
+ * activity event(s), and guard-gated receipt all run BEFORE the plan's own primary statement, so
+ * a primary statement that mutates the very row the guard reads (week.close's finalize) can't
+ * flip the guard for the bookkeeping statements that are supposed to share its outcome. */
+async function applyAtomicPlan(
+  db: Database,
+  ownerId: string,
+  envelope: CommandEnvelope,
+  payloadHash: string,
+  boardRevisionBefore: number,
+  plan: AtomicPlan,
+): Promise<CommandResult> {
+  await ensureBoardState(db, ownerId);
+  const boardRevision = boardRevisionBefore + 1;
+  // Bound explicitly, never left to SQLite's CURRENT_TIMESTAMP default - see appendActivityEvent's
+  // comment on why that default's non-ISO format silently breaks progress.ts's instant comparisons.
+  const now = new Date().toISOString();
+
+  const statements: PreparedStatement[] = [];
+  statements.push(
+    db
+      .prepare(`UPDATE board_state SET revision = revision + 1, updated_at = ? WHERE owner_id = ? AND ${plan.guardSql}`)
+      .bind(now, ownerId, ...plan.guardParams),
+  );
+  for (const event of plan.activity) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO activity_events (id, owner_id, entity_id, actor_kind, event_type, request_id, before_json, after_json, timestamp)
+           SELECT ?, ?, ?, 'owner', ?, ?, ?, ?, ? WHERE ${plan.guardSql}`,
+        )
+        .bind(
+          `evt_${crypto.randomUUID()}`,
+          ownerId,
+          event.entityId,
+          event.eventType,
+          envelope.requestId,
+          event.before === undefined ? null : JSON.stringify(event.before),
+          event.after === undefined ? null : JSON.stringify(event.after),
+          now,
+          ...plan.guardParams,
+        ),
+    );
+  }
+
+  const success: CommandResult = {
+    ok: true,
+    requestId: envelope.requestId,
+    boardRevision,
+    result: plan.result,
+    changedItemIds: plan.changedItemIds,
+    changedListIds: plan.changedListIds,
+  };
+  statements.push(
+    db
+      .prepare(
+        `INSERT INTO command_receipts (owner_id, request_id, payload_hash, committed_revision, result_json)
+         SELECT ?, ?, ?, ?, ? WHERE ${plan.guardSql}`,
+      )
+      .bind(ownerId, envelope.requestId, payloadHash, boardRevision, JSON.stringify(success), ...plan.guardParams),
+  );
+  statements.push(plan.primaryStatement);
+
+  const results = await db.batch(statements);
+  const primaryChanges = results[results.length - 1].meta.changes;
+  if (primaryChanges === 0 && plan.onZeroChanges) {
+    throw plan.onZeroChanges();
+  }
+  return success;
+}
+
+const ATOMIC_HANDLERS: Partial<Record<CommandAction, (db: Database, ownerId: string, input: never) => Promise<NoopOutcome | AtomicOutcome>>> = {
+  "focus.set": focusSetPlan,
+  "week.commit": weekCommitPlan,
+  "week.withdraw": weekWithdrawPlan,
+  "week.close": weekClosePlan,
+};
+
+// Partial: focus.*/week.* are dispatched through ATOMIC_HANDLERS instead (see applyCommand).
+const HANDLERS: Partial<Record<CommandAction, (db: Database, ownerId: string, input: never) => Promise<HandlerOutcome<unknown>>>> = {
   "items.create": itemsCreate,
   "items.update": itemsUpdate,
   "items.complete": itemsComplete,
@@ -441,11 +611,46 @@ const HANDLERS: Record<CommandAction, (db: Database, ownerId: string, input: nev
   "lists.create": listsCreate,
   "lists.update": listsUpdate,
   "lists.delete": listsDelete,
-  "focus.set": focusSet,
-  "week.commit": weekCommit,
-  "week.withdraw": weekWithdraw,
-  "week.close": weekClose,
 };
+
+/** Shared tail for the non-atomic items./lists. path and for focus./week.'s true no-op outcomes
+ * (nothing to write, so there's no atomicity concern - see AtomicPlan/ATOMIC_HANDLERS above).
+ * Runs the revision bump, activity-event append(s), and receipt save as separate statements;
+ * items./lists. inherit the pre-existing (pre-Phase-3) version of Blocker B, unchanged by this
+ * slice since those commands stay gated behind d1_primary and unreached by any real owner. */
+async function finishViaBumpAndReceipt(
+  db: Database,
+  ownerId: string,
+  envelope: CommandEnvelope,
+  payloadHash: string,
+  outcome: HandlerOutcome<unknown>,
+): Promise<CommandResult> {
+  const boardRevision = await bumpBoardRevision(db, ownerId);
+  for (const event of outcome.activity) {
+    await appendActivityEvent(db, {
+      id: `evt_${crypto.randomUUID()}`,
+      ownerId,
+      entityId: event.entityId,
+      actorKind: "owner",
+      eventType: event.eventType,
+      requestId: envelope.requestId,
+      before: event.before,
+      after: event.after,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  const success: CommandResult = {
+    ok: true,
+    requestId: envelope.requestId,
+    boardRevision,
+    result: outcome.result,
+    changedItemIds: outcome.changedItemIds,
+    changedListIds: outcome.changedListIds,
+  };
+  await saveReceipt(db, ownerId, envelope.requestId, payloadHash, boardRevision, JSON.stringify(success));
+  return success;
+}
 
 /**
  * The single mutation entry point for d1_primary owners. Validates the envelope, enforces
@@ -480,33 +685,18 @@ export async function applyCommand(db: Database, ownerId: string, envelope: Comm
       throw new CommandError("VALIDATION_FAILED", "Invalid command payload.", parsed.error.flatten());
     }
 
-    const handler = HANDLERS[envelope.action];
-    const outcome = await handler(db, ownerId, parsed.data as never);
-
-    const boardRevision = await bumpBoardRevision(db, ownerId);
-    for (const event of outcome.activity) {
-      await appendActivityEvent(db, {
-        id: `evt_${crypto.randomUUID()}`,
-        ownerId,
-        entityId: event.entityId,
-        actorKind: "owner",
-        eventType: event.eventType,
-        requestId: envelope.requestId,
-        before: event.before,
-        after: event.after,
-      });
+    const atomicHandler = ATOMIC_HANDLERS[envelope.action];
+    if (atomicHandler) {
+      const outcome = await atomicHandler(db, ownerId, parsed.data as never);
+      if (outcome.kind === "atomic") {
+        return await applyAtomicPlan(db, ownerId, envelope, payloadHash, boardRevisionBefore, outcome.plan);
+      }
+      return await finishViaBumpAndReceipt(db, ownerId, envelope, payloadHash, outcome.outcome);
     }
 
-    const success: CommandResult = {
-      ok: true,
-      requestId: envelope.requestId,
-      boardRevision,
-      result: outcome.result,
-      changedItemIds: outcome.changedItemIds,
-      changedListIds: outcome.changedListIds,
-    };
-    await saveReceipt(db, ownerId, envelope.requestId, payloadHash, boardRevision, JSON.stringify(success));
-    return success;
+    const handler = HANDLERS[envelope.action]!;
+    const outcome = await handler(db, ownerId, parsed.data as never);
+    return await finishViaBumpAndReceipt(db, ownerId, envelope, payloadHash, outcome);
   } catch (error) {
     if (error instanceof CommandError) {
       return { ok: false, error: { code: error.code, message: error.message, details: error.details } };

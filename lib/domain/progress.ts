@@ -36,12 +36,22 @@ export type WeekStats =
     };
 
 /**
- * `week.endDate` is exclusive (the calendar date the following week starts on) - see
- * weekEndDate(). A task contributes at most once (keyed by itemId), matching "a task
- * contributes once per week, even if shown in several views."
+ * Astra review (Phase 3 Slice 1, c02e352): the previous implementation compared raw event
+ * timestamps against plain `startDate`/`endDate` calendar-date strings, which is both timezone-
+ * naive (a timestamp string like "2026-09-07T04:30:00Z" lexicographically compares as >= the
+ * date-only string "2026-09-07", even though 04:30 UTC is still Sunday night in Chicago) and
+ * ignores `addedAt`/commitment-selection ordering and per-week event-history bounding. Fixed by:
+ * (1) resolving the week's boundaries to real UTC instants in the planning timezone via
+ * `zonedMidnightUtc`, (2) requiring a completion to land at/after the commitment's `addedAt` to
+ * count ("count completion events inside the week after commitment selection" - a completion
+ * that predates being selected for the week isn't this week's win), and (3) evaluating each
+ * week's on-time contribution only from events that happened before that week's own end instant,
+ * so a reopen event that happens in a *later* week can no longer retroactively erase an earlier,
+ * already-elapsed week's completion (only a reopen inside the same week reverses it, per
+ * contract). Late-completion detection still looks at the full history separately.
  */
 export function computeWeekStats(params: {
-  week: { startDate: string; endDate: string };
+  week: { startDate: string; endDate: string; timezone: string };
   commitments: CommitmentInput[];
   itemsById: Record<string, CommitmentItemInfo>;
   events: ItemEventInput[];
@@ -51,9 +61,11 @@ export function computeWeekStats(params: {
     return { status: "no_commitments", label: "No tasks planned" };
   }
 
-  // Events must be time-sorted per item so a reopen that arrives after a complete (regardless
-  // of insertion order) correctly cancels that completion's contribution - contract rule:
-  // "Reopen within the same week reverses its current completion contribution."
+  const weekStartInstant = zonedMidnightUtc(week.startDate, week.timezone);
+  const weekEndInstant = zonedMidnightUtc(week.endDate, week.timezone);
+
+  // Events must be time-sorted per item so the "last event before a cutoff wins" walks below
+  // see them in chronological order regardless of insertion order.
   const eventsByItem = new Map<string, ItemEventInput[]>();
   for (const event of events) {
     const list = eventsByItem.get(event.itemId) ?? [];
@@ -74,25 +86,41 @@ export function computeWeekStats(params: {
     const isTask = info ? info.itemType !== "Goal" && info.itemType !== "Reference" : true;
     if (isTask) taskCommitments++;
 
-    // Walk this item's complete/reopen history chronologically; the most recent "complete" not
-    // since reversed by a "reopen" is its completion timestamp, or null if never completed (or
-    // reopened after).
-    let completedAt: string | null = null;
-    for (const event of eventsByItem.get(commitment.itemId) ?? []) {
-      completedAt = event.eventType === "items.complete" ? event.timestamp : null;
-    }
-    if (!completedAt) continue;
+    const itemEvents = eventsByItem.get(commitment.itemId) ?? [];
 
-    if (completedAt >= week.startDate && completedAt < week.endDate) {
+    // On-time contribution: the item's completion state as of the end of THIS week's window
+    // only - events from a later week (e.g. a reopen the following week) must never reach back
+    // and change an already-elapsed week's outcome (contract: "Closing a week freezes its
+    // report. Later edits do not rewrite historical reports" - and even before closing, a later
+    // week's events aren't "within" this week).
+    let completedAsOfWeekEnd: string | null = null;
+    for (const event of itemEvents) {
+      if (event.timestamp >= weekEndInstant) break;
+      completedAsOfWeekEnd = event.eventType === "items.complete" ? event.timestamp : null;
+    }
+    // Contract: "Count completion events inside the week after commitment selection" - a
+    // completion timestamped before the item was even added to this week isn't this week's win.
+    const onTime =
+      completedAsOfWeekEnd !== null &&
+      completedAsOfWeekEnd >= commitment.addedAt &&
+      completedAsOfWeekEnd >= weekStartInstant;
+
+    if (onTime) {
       if (isTask) completed++;
       else goalMilestonesCompleted++;
-    } else if (completedAt >= week.endDate && isTask) {
-      // Contract rule: "Completion outside the week is shown as late completion, not rewritten
-      // as on-time success." Only completions after the week ends count as late here - a
-      // completion timestamped before the week started isn't this week's commitment to begin
-      // with, so it's neither on-time nor late for this report.
-      lateCompletions++;
+      continue;
     }
+
+    if (!isTask) continue;
+
+    // Not on-time: a completion that still stands (not itself since reversed by a reopen) and
+    // lands at/after this week's end is a late completion - contract: "Completion outside the
+    // week is shown as late completion, not rewritten as on-time success."
+    let finalState: string | null = null;
+    for (const event of itemEvents) {
+      finalState = event.eventType === "items.complete" ? event.timestamp : null;
+    }
+    if (finalState !== null && finalState >= weekEndInstant) lateCompletions++;
   }
 
   return {
@@ -116,6 +144,35 @@ export function weekEndDate(startDate: string): string {
   const [year, month, day] = startDate.split("-").map(Number);
   const end = new Date(Date.UTC(year, month - 1, day) + 7 * 86_400_000);
   return end.toISOString().slice(0, 10);
+}
+
+/**
+ * The UTC instant of local midnight on `dateStr` (a YYYY-MM-DD calendar date) in `timezone`.
+ * Uses the standard "guess UTC midnight, ask the timezone what wall-clock time that instant
+ * reads as, then correct by the resulting offset" double-conversion - the same technique
+ * `mondayStartOf` already uses via `Intl.DateTimeFormat`, which resolves the correct UTC offset
+ * for that specific calendar date (so DST transitions are handled correctly, unlike a fixed
+ * offset lookup).
+ */
+export function zonedMidnightUtc(dateStr: string, timezone: string): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const guess = Date.UTC(year, month - 1, day);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(guess));
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value])) as Record<string, string>;
+  // Midnight can render as "24:00:00" in this formatter depending on the runtime; normalize.
+  const hour = Number(map.hour) % 24;
+  const wallClockAsUtc = Date.UTC(Number(map.year), Number(map.month) - 1, Number(map.day), hour, Number(map.minute), Number(map.second));
+  const offsetMs = wallClockAsUtc - guess;
+  return new Date(guess - offsetMs).toISOString();
 }
 
 /**

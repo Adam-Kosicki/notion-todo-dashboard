@@ -108,6 +108,14 @@ export async function saveReceipt(
     .run();
 }
 
+/**
+ * Astra review (Phase 3 Slice 1, c02e352): the weekly statistics contract (lib/domain/progress.ts)
+ * compares event timestamps against real UTC instants, which requires every activity_events row
+ * to actually be in ISO-8601 format ("...T...Z"). SQLite's own `CURRENT_TIMESTAMP` column default
+ * produces "YYYY-MM-DD HH:MM:SS" instead - a space, not "T", at the same position - which sorts
+ * as LESS than any same-day ISO instant (' ' < 'T' in ASCII) regardless of actual time of day.
+ * Always bind an app-computed `timestamp` explicitly; never rely on the column default.
+ */
 export async function appendActivityEvent(
   db: Database,
   event: {
@@ -119,11 +127,12 @@ export async function appendActivityEvent(
     requestId: string | null;
     before: unknown;
     after: unknown;
+    timestamp: string;
   },
 ): Promise<void> {
   await db
     .prepare(
-      "INSERT INTO activity_events (id, owner_id, entity_id, actor_kind, event_type, request_id, before_json, after_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO activity_events (id, owner_id, entity_id, actor_kind, event_type, request_id, before_json, after_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(
       event.id,
@@ -134,6 +143,7 @@ export async function appendActivityEvent(
       event.requestId,
       event.before === undefined ? null : JSON.stringify(event.before),
       event.after === undefined ? null : JSON.stringify(event.after),
+      event.timestamp,
     )
     .run();
 }
@@ -159,18 +169,17 @@ export async function listFocusItems(db: Database, ownerId: string): Promise<Foc
   return result.results;
 }
 
-export async function setFocusItem(db: Database, ownerId: string, itemId: string, reviewUntil: string | null): Promise<void> {
-  await db
+export function setFocusItemStmt(db: Database, ownerId: string, itemId: string, reviewUntil: string | null, now: string): PreparedStatement {
+  return db
     .prepare(
-      `INSERT INTO focus_items (owner_id, item_id, selected_at, review_until) VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+      `INSERT INTO focus_items (owner_id, item_id, selected_at, review_until) VALUES (?, ?, ?, ?)
        ON CONFLICT (owner_id, item_id) DO UPDATE SET review_until = excluded.review_until`,
     )
-    .bind(ownerId, itemId, reviewUntil)
-    .run();
+    .bind(ownerId, itemId, now, reviewUntil);
 }
 
-export async function removeFocusItem(db: Database, ownerId: string, itemId: string): Promise<void> {
-  await db.prepare("DELETE FROM focus_items WHERE owner_id = ? AND item_id = ?").bind(ownerId, itemId).run();
+export function removeFocusItemStmt(db: Database, ownerId: string, itemId: string): PreparedStatement {
+  return db.prepare("DELETE FROM focus_items WHERE owner_id = ? AND item_id = ?").bind(ownerId, itemId);
 }
 
 export type PlanningWeekRow = {
@@ -197,11 +206,28 @@ export async function createPlanningWeek(db: Database, ownerId: string, id: stri
     .run();
 }
 
-export async function closePlanningWeekRow(db: Database, ownerId: string, id: string, reportJson: string): Promise<void> {
-  await db
-    .prepare("UPDATE planning_weeks SET status = 'closed', report_json = ? WHERE owner_id = ? AND id = ?")
-    .bind(reportJson, ownerId, id)
+/**
+ * Astra review (Phase 3 Slice 1, c02e352, Blocker B): compare-and-swap 'open' -> 'closing'.
+ * This is the exclusive lock that stops week.commit/week.withdraw (both guarded on status =
+ * 'open') from racing a concurrent week.close's read-compute-freeze sequence - see commands.ts's
+ * weekClose. Returns false if some other request already holds it (or already finished
+ * closing); the caller re-reads the row to find out which.
+ */
+export async function beginClosingPlanningWeek(db: Database, ownerId: string, id: string): Promise<boolean> {
+  const result = await db
+    .prepare("UPDATE planning_weeks SET status = 'closing' WHERE owner_id = ? AND id = ? AND status = 'open'")
+    .bind(ownerId, id)
     .run();
+  return result.meta.changes > 0;
+}
+
+/** Finalizes a close: only takes effect while this row still holds the 'closing' lock, so it's
+ * safe to include (guarded the same way) in the same atomic batch as the revision bump, activity
+ * event, and receipt - see commands.ts's applyAtomicPlan. */
+export function finalizeClosedPlanningWeekStmt(db: Database, ownerId: string, id: string, reportJson: string): PreparedStatement {
+  return db
+    .prepare("UPDATE planning_weeks SET status = 'closed', report_json = ? WHERE owner_id = ? AND id = ? AND status = 'closing'")
+    .bind(reportJson, ownerId, id);
 }
 
 export type WeekCommitmentRow = {
@@ -228,18 +254,36 @@ export async function listWeekCommitments(db: Database, ownerId: string, weekId:
   return result.results;
 }
 
-export async function addWeekCommitment(db: Database, ownerId: string, weekId: string, itemId: string): Promise<void> {
-  await db
-    .prepare("INSERT INTO week_commitments (owner_id, week_id, item_id, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
-    .bind(ownerId, weekId, itemId)
-    .run();
+/**
+ * Astra review (Phase 3 Slice 1, c02e352, Blocker B): the commit is database-enforced against a
+ * concurrently closing week (the `WHERE EXISTS (... status = 'open')` guard) rather than relying
+ * on the caller's own pre-read staying true. Also handles re-adding a previously withdrawn
+ * commitment (the roadmap's phase-3 acceptance criteria explicitly require add/withdraw/re-add):
+ * the upsert clears any prior withdrawal and refreshes `added_at` to now, since a re-add is a new
+ * selection event as far as the weekly-statistics contract's "after commitment selection" rule is
+ * concerned (see lib/domain/progress.ts). Returns an unexecuted statement so commands.ts can run
+ * it in the same atomic batch as the revision bump/activity event/receipt - see applyAtomicPlan.
+ */
+export function upsertWeekCommitmentStmt(db: Database, ownerId: string, weekId: string, itemId: string, now: string): PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO week_commitments (owner_id, week_id, item_id, added_at)
+       SELECT ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')
+       ON CONFLICT (owner_id, week_id, item_id) DO UPDATE SET withdrawn_at = NULL, withdrawal_reason = NULL, added_at = excluded.added_at`,
+    )
+    .bind(ownerId, weekId, itemId, now, ownerId, weekId);
 }
 
-export async function withdrawWeekCommitment(db: Database, ownerId: string, weekId: string, itemId: string, reason: string | null): Promise<void> {
-  await db
-    .prepare("UPDATE week_commitments SET withdrawn_at = CURRENT_TIMESTAMP, withdrawal_reason = ? WHERE owner_id = ? AND week_id = ? AND item_id = ?")
-    .bind(reason, ownerId, weekId, itemId)
-    .run();
+/** Same database-enforced "week must still be open" guard as upsertWeekCommitmentStmt. */
+export function withdrawWeekCommitmentStmt(db: Database, ownerId: string, weekId: string, itemId: string, reason: string | null, now: string): PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE week_commitments SET withdrawn_at = ?, withdrawal_reason = ?
+       WHERE owner_id = ? AND week_id = ? AND item_id = ? AND withdrawn_at IS NULL
+       AND EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')`,
+    )
+    .bind(now, reason, ownerId, weekId, itemId, ownerId, weekId);
 }
 
 export type ActivityEventRow = { entity_id: string; event_type: string; timestamp: string };
