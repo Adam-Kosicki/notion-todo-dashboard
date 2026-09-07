@@ -116,3 +116,59 @@ export function withTempDbFile() {
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
+
+/**
+ * Wraps a node:sqlite DatabaseSync in the same shape as lib/server/repository.ts's `Database`
+ * interface (async prepare().bind().first()/run()/all(), plus a transactional batch()) - the
+ * shape a real Cloudflare D1Database already satisfies. This is what lets
+ * tests/commands.test.mjs and tests/identity.test.mjs exercise lib/server/commands.ts and
+ * repository.ts directly, without a Workers runtime.
+ *
+ * node:sqlite's StatementSync takes params directly in .run()/.get()/.all() rather than D1's
+ * chained .bind() - this adapter bridges that calling-convention difference, nothing else.
+ */
+export function asD1(rawDb) {
+  function wrapStatement(sql) {
+    const stmt = rawDb.prepare(sql);
+    let boundArgs = [];
+    const wrapped = {
+      bind(...args) { boundArgs = args; return wrapped; },
+      async first() {
+        const row = stmt.get(...boundArgs);
+        return row === undefined ? null : row;
+      },
+      async run() {
+        const info = stmt.run(...boundArgs);
+        return { meta: { changes: Number(info.changes) } };
+      },
+      async all() {
+        return { results: stmt.all(...boundArgs) };
+      },
+    };
+    return wrapped;
+  }
+  return {
+    prepare(sql) {
+      return wrapStatement(sql);
+    },
+    async batch(statements) {
+      rawDb.exec("BEGIN IMMEDIATE");
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        rawDb.exec("COMMIT");
+        return results;
+      } catch (error) {
+        rawDb.exec("ROLLBACK");
+        throw error;
+      }
+    },
+  };
+}
+
+/** Convenience: open an in-memory (or temp-file) DB, run every migration, and wrap it as a D1-shaped Database, in one call. */
+export function createMigratedD1({ file } = {}) {
+  const rawDb = openTestDb({ file });
+  applyMigrations(rawDb);
+  return asD1(rawDb);
+}

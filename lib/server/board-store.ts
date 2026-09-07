@@ -2,10 +2,12 @@
 import "server-only";
 
 import { env } from "cloudflare:workers";
-import { headers } from "next/headers";
 import type { BoardItem, BoardList, BoardPayload, EditableChanges, EditableList, RelationOption } from "@/lib/board-types";
 import { LIST_RULES, LIST_SORTS, listMoveChanges } from "@/lib/list-behavior";
 import { ITEM_TYPES, LIST_TYPES } from "@/lib/board-types";
+import { requireOwnerId } from "@/lib/server/identity";
+
+export { requireOwnerId };
 
 const NOTION_VERSION = "2026-03-11";
 
@@ -65,20 +67,6 @@ function notionDataSources() {
     projects: runtimeEnv.NOTION_PROJECTS_DATA_SOURCE_ID?.trim() || null,
     goals: runtimeEnv.NOTION_GOALS_DATA_SOURCE_ID?.trim() || null,
   };
-}
-
-export async function requireOwnerId() {
-  const requestHeaders = await headers();
-  const oaiId = requestHeaders.get("oai-authenticated-user-id");
-  if (oaiId) return oaiId;
-  const oaiEmail = requestHeaders.get("oai-authenticated-user-email");
-  if (oaiEmail) return oaiEmail.toLowerCase();
-  // Cloudflare Access strips any client-supplied Cf-Access-* header at the edge and
-  // only sets this one itself after a successful login to an Access-protected
-  // hostname, so it's safe to trust directly at the origin without JWT verification.
-  const accessEmail = requestHeaders.get("cf-access-authenticated-user-email");
-  if (accessEmail) return accessEmail.toLowerCase();
-  throw new Error("AUTH_REQUIRED");
 }
 
 function fromBase64(value: string) {

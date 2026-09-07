@@ -36,6 +36,27 @@ export const items = sqliteTable(
     dirty: integer("dirty", { mode: "boolean" }).notNull().default(false),
     rawJson: text("raw_json").notNull().default("{}"),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    // Phase 1 (docs/plans/burner-board-roadmap.md): stable membership by id rather than by
+    // list name string. `collection` stays as the compatibility/source text field — nothing
+    // reads listId yet outside the new d1_primary command path (lib/server/commands.ts).
+    listId: text("list_id"),
+    // Original creation time, when trustworthy source metadata exists (e.g. Notion's native
+    // "Created time"). Distinct from updatedAt (changes on every edit) and recordedAt (below).
+    createdAt: text("created_at"),
+    createdAtSource: text("created_at_source"),
+    // When this app first recorded the row locally - always known for new rows (every insert
+    // sets it explicitly; see lib/server/commands.ts's itemsCreate), backfilled for legacy rows
+    // by migration 0008's data UPDATE. No DB-level default: SQLite's ALTER TABLE ADD COLUMN
+    // rejects a non-constant default (CURRENT_TIMESTAMP) on a table that already has rows -
+    // see tests/migrations.test.mjs's "non-empty table" test and drizzle/0008's comment.
+    recordedAt: text("recorded_at"),
+    // Tombstone for the new d1_primary delete path (replaces hard DELETE - see deleteItem's
+    // legacy_notion behavior in board-store.ts, unchanged for now).
+    deletedAt: text("deleted_at"),
+    reviewState: text("review_state"),
+    // Optimistic-concurrency counter for the new command layer. Legacy_notion writes (the
+    // existing updateItem/deleteItem etc.) do not increment this yet.
+    version: integer("version").notNull().default(1),
   },
   (table) => [
     primaryKey({ columns: [table.ownerId, table.id] }),
@@ -45,6 +66,8 @@ export const items = sqliteTable(
     index("idx_items_owner_type_status").on(table.ownerId, table.itemType, table.status),
     index("idx_items_owner_completed").on(table.ownerId, table.completedAt),
     index("idx_items_owner_group").on(table.ownerId, table.groupId),
+    index("idx_items_owner_list_id").on(table.ownerId, table.listId),
+    index("idx_items_owner_deleted").on(table.ownerId, table.deletedAt),
   ],
 );
 
@@ -89,4 +112,57 @@ export const appMeta = sqliteTable(
     value: text("value").notNull(),
   },
   (table) => [primaryKey({ columns: [table.ownerId, table.key] })],
+);
+
+// Phase 1 (docs/plans/burner-board-roadmap.md): owner-level revision counter and the
+// legacy_notion -> d1_primary storage-mode switch. Stays "legacy_notion" for every real owner
+// until the phase 4 cutover gate is satisfied - see docs/operations/data-recovery.md.
+export const boardState = sqliteTable(
+  "board_state",
+  {
+    ownerId: text("owner_id").notNull(),
+    revision: integer("revision").notNull().default(0),
+    storageMode: text("storage_mode").notNull().default("legacy_notion"),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [primaryKey({ columns: [table.ownerId] })],
+);
+
+// One row per accepted command request. A replayed request_id with the SAME payload returns
+// the stored result (idempotent, no duplicate activity_events); a different payload is a
+// CONFLICT (see lib/server/commands.ts).
+export const commandReceipts = sqliteTable(
+  "command_receipts",
+  {
+    ownerId: text("owner_id").notNull(),
+    requestId: text("request_id").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    committedRevision: integer("committed_revision").notNull(),
+    resultJson: text("result_json").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [primaryKey({ columns: [table.ownerId, table.requestId] })],
+);
+
+// Append-only. Not a general event-sourcing log (current-state tables remain authoritative) -
+// this exists for progress/history evidence and targeted undo, per the roadmap's explicit
+// "do not add a general event-sourcing framework" instruction.
+export const activityEvents = sqliteTable(
+  "activity_events",
+  {
+    id: text("id").notNull(),
+    ownerId: text("owner_id").notNull(),
+    entityId: text("entity_id").notNull(),
+    actorKind: text("actor_kind").notNull(),
+    eventType: text("event_type").notNull(),
+    timestamp: text("timestamp").notNull().default(sql`CURRENT_TIMESTAMP`),
+    requestId: text("request_id"),
+    beforeJson: text("before_json"),
+    afterJson: text("after_json"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    index("idx_activity_owner_entity").on(table.ownerId, table.entityId),
+    index("idx_activity_owner_timestamp").on(table.ownerId, table.timestamp),
+  ],
 );

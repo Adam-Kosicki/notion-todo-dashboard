@@ -64,6 +64,22 @@ test("re-running all migrations against an already-migrated database is a no-op,
   assert.throws(() => applyMigrations(db), /already exists|Migration .* failed/);
 });
 
+test("every migration applies cleanly to a table that already has rows, not just an empty one", () => {
+  // Regression test: SQLite's ALTER TABLE ADD COLUMN rejects a non-constant default
+  // (CURRENT_TIMESTAMP, CURRENT_DATE, an expression) specifically when the table already has
+  // rows - a constraint that never surfaces against a freshly-migrated, empty database (every
+  // other test in this file). Caught for real against the actual local dev D1 file (which has
+  // real data) while building migration 0008 - fixed there by dropping the DB-level default and
+  // backfilling with a data UPDATE instead. This test exists so the next migration that adds a
+  // column can't reintroduce the same mistake and have it only surface against real data later.
+  const files = migrationFiles();
+  const lastFile = files[files.length - 1];
+  const db = openTestDb();
+  applyMigrations(db, { upTo: files[files.length - 2] ?? files[0] });
+  seedSyntheticOwner(db, "zz-non-empty-migration-test");
+  assert.doesNotThrow(() => applyMigrations(db, { from: files[files.length - 2] ?? undefined }), `migration ${lastFile} must apply cleanly even when items/lists already have rows`);
+});
+
 test("owner isolation: two synthetic owners can hold same-shaped rows without colliding", () => {
   const db = openTestDb();
   applyMigrations(db);

@@ -11,6 +11,14 @@
 //   node scripts/migrate-board.mjs --db <path-to-sqlite-file> --mode dry-run
 //   node scripts/migrate-board.mjs --db <path-to-sqlite-file> --mode check
 //   node scripts/migrate-board.mjs --db <path-to-sqlite-file> --mode apply
+//   node scripts/migrate-board.mjs --db <path-to-sqlite-file> --mode seed --up-to <file>
+//
+// `seed` is for adopting this ledger on a database that was already migrated by hand before
+// this tool existed (e.g. this repo's own local dev D1, migrated via `sqlite3 "$DB" <
+// migration.sql` up through 0007 before scripts/migrate-board.mjs existed): it marks every
+// migration up to and including --up-to as applied WITHOUT running their SQL. Refuses to run
+// if the ledger already has entries (adopt once, on a genuinely pre-existing database) or if
+// --up-to isn't the actual next unrecorded migration in sequence.
 //
 // For production D1, this script does not talk to Cloudflare directly today -
 // export the D1 file (or use `wrangler d1 execute --config wrangler.deploy.jsonc`)
@@ -35,10 +43,11 @@ function usageAndExit(message) {
 }
 
 function parseArgs(argv) {
-  const args = { db: null, mode: null };
+  const args = { db: null, mode: null, upTo: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--db") args.db = argv[++i];
     else if (argv[i] === "--mode") args.mode = argv[++i];
+    else if (argv[i] === "--up-to") args.upTo = argv[++i];
   }
   return args;
 }
@@ -106,11 +115,12 @@ function detectLedgerDrift(db) {
 }
 
 function main() {
-  const { db: dbPath, mode } = parseArgs(process.argv.slice(2));
+  const { db: dbPath, mode, upTo } = parseArgs(process.argv.slice(2));
   if (!dbPath) usageAndExit("--db is required; there is no default target.");
-  if (!mode || !["dry-run", "check", "apply"].includes(mode)) {
-    usageAndExit(`--mode must be one of dry-run, check, apply (got ${mode ?? "nothing"}).`);
+  if (!mode || !["dry-run", "check", "apply", "seed"].includes(mode)) {
+    usageAndExit(`--mode must be one of dry-run, check, apply, seed (got ${mode ?? "nothing"}).`);
   }
+  if (mode === "seed" && !upTo) usageAndExit("--mode seed requires --up-to <file>.");
 
   const dbExisted = existsSync(dbPath);
   const db = new DatabaseSync(dbPath);
@@ -160,6 +170,37 @@ function main() {
         console.log(`  applied ${file}`);
       }
       console.log("Done.");
+    }
+
+    if (mode === "seed") {
+      if (appliedMigrations(db).length > 0) {
+        console.error("Refusing to seed: the ledger already has entries. `seed` is only for adopting a never-ledgered database.");
+        process.exitCode = 1;
+        return;
+      }
+      const files = migrationFiles();
+      const cutoffIndex = files.indexOf(upTo);
+      if (cutoffIndex === -1) {
+        console.error(`--up-to ${upTo} is not a known migration file.`);
+        process.exitCode = 1;
+        return;
+      }
+      ensureLedgerTable(db);
+      const toSeed = files.slice(0, cutoffIndex + 1);
+      const now = new Date().toISOString();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const file of toSeed) {
+          db.prepare(`INSERT INTO ${LEDGER_TABLE} (id, applied_at) VALUES (?, ?)`).run(file, now);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      console.log(`Seeded ${toSeed.length} migration(s) as already-applied, without running their SQL:`);
+      for (const file of toSeed) console.log(`  - ${file}`);
+      console.log(`Remaining pending: ${pendingMigrations(db).length}`);
     }
   } finally {
     db.close();
