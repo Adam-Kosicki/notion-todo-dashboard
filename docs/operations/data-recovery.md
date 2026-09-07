@@ -4,6 +4,21 @@ Written during Phase 0 of `docs/plans/burner-board-roadmap.md`. This is an opera
 product documentation — see `docs/ARCHITECTURE.md` for how the app works and `CONTEXT.md` for
 domain vocabulary.
 
+## Migration 0008 applied to production — 2026-09-07
+
+Owner approved (Phase 1 handoff Q1) applying the phase-1 schema migration to real production
+D1, given it's additive/schema-only (storage_mode stays `legacy_notion` for the real owner —
+nothing about live behavior changes) and the owner already has an independent backup (their own
+CSV export, `../burner-board-2026-09-07.csv`).
+
+Process: `npx wrangler d1 export burner-board-db --config wrangler.deploy.jsonc --remote --output
+backups/burner-board-db-pre-0008-2026-09-07.sql` (gitignored `backups/`, verified non-trivial:
+572 `items` rows, 19 `lists` rows), then `npx wrangler d1 execute burner-board-db --config
+wrangler.deploy.jsonc --remote --file drizzle/0008_sticky_dakota_north.sql` (15 queries, 573
+rows written, `changed_db: true`). Verified after: 572/572 items have `recorded_at` backfilled,
+`list_id` untouched (0, as expected — nothing populates it yet), `board_state` has zero rows
+(the real owner remains implicitly `legacy_notion`, exactly as intended).
+
 ## Local dev database (Miniflare-simulated D1)
 
 The file lives at `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite`. It is a plain
