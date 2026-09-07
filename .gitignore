@@ -40,6 +40,10 @@ yarn-error.log*
 /backups/
 /app/data/*.enc.*
 
+# Adam's raw planning notes (verbatim quotes, not for git) — README stays tracked
+/docs/adr/local/*
+!/docs/adr/local/README.md
+
 # vercel
 .vercel
 
