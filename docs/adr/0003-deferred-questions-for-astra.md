@@ -72,3 +72,39 @@ The end goal for this project is for an AI (ChatGPT, Claude) to have easy, direc
 - Costs: loses Notion's existing mobile/desktop apps and any workflows built around using Notion directly, unless Burner Board itself becomes the sole daily-use surface. Building and maintaining a custom MCP server is real, ongoing work versus Notion's MCP support already existing.
 
 **A third option worth naming, not deciding:** the app is already a hybrid (Notion for legacy/synced items, D1-only for everything Burner-Board-specific). That hybrid could simply continue and deepen — e.g., D1 stays the system of record for anything without a Notion equivalent (already true) while Notion sync is kept, improved (fix the dirty-item retry gap), or scoped down, rather than an either/or migration.
+
+## 3. The create/edit task view is overwhelming; likely needs a database schema revamp
+
+### Status
+Deferred — 2026-09-07. Not decided, not implemented. Left for GPT ASTRA to figure out, including whether AI belongs in the solution at all.
+
+### Context
+The user pasted the full task editor (`EditorSheet` in `app/board-app.tsx`) for one plain Task ("give cat flea medication") and called it overwhelming: "creating metadata for a single task is ridiculous." The fields on screen for one task, today: a Show-in-Todoist switch, an Importance/priority slider with a written guide (0 = list/goal, 1–3 later, 4–7 next, 8–10 now), Status, Collection, Item type, Due date, Scheduled date, Date rule, (conditionally) Repeat and Reminder time, Energy, Context (multi-select chips: Computer/Phone/Errands/Home/Anywhere), Area, Project, Goal, Notes, "Mark active now", and Starred. That's roughly 15 fields for a single task, all present at once regardless of whether the task needs any of them.
+
+This is the same underlying tension as topic 1 above (List Type vs item type): the schema has accreted a field for every feature added over time, and the editor just renders all of them. A redesign of task creation/editing will likely require deciding which fields are core (shown always), which are contextual (shown only when relevant — e.g. Repeat/Reminder time already only appear for Reminder/Event), and which should be inferred/suggested rather than manually set — which in turn likely means restructuring how those fields are stored, not just how they're displayed.
+
+### What the user is considering
+- Using an AI system to reduce the manual field-filling burden — auto-sorting a new task, suggesting an existing list it belongs in or proposing a new one, and by extension possibly suggesting other fields (type, area, project, tags) from the task's text.
+- Two specific Obsidian plugins as inspiration/prior art, both present locally at the project's parent folder: `smart-connections` and `smart-lookup` (`C:\Users\maste\Desktop\Todo-List-Back-Burner Project\smart-connections` and `...\smart-lookup`). These do semantic/embedding-based note linking and lookup inside Obsidian's vault graph — the analogous idea here would be semantic matching between a new task's text and existing lists/tasks, rather than exact keyword matching.
+- Hard constraint: whatever AI model is used must not cost the user money to run.
+
+### What already exists in this codebase (don't rebuild from scratch)
+`lib/organizing.ts` already implements a **free, non-AI, keyword-based** suggestion engine used today only by Organize Mode's one-at-a-time triage flow, not by task creation or the main editor:
+- `suggestLists()` — scores every list against a new item's title/notes/tags using list-name word overlap, a small hardcoded keyword-category table (groceries, career, health, sports, bills, wishlist, coding), and word-overlap similarity to existing items already in each list; returns the top 3 matches with a human-readable reason and any tags to carry over.
+- `suggestedType()` — maps a list's type/defaultItemType to a suggested item type.
+- `suggestedDate()` — regex-based date inference from a title ("tomorrow", "today", an explicit `YYYY-MM-DD`).
+
+This is real prior art for "suggest a list / infer fields without a paid model" and already ships in production. Whether ASTRA's answer is to extend this lexical approach, replace it with embeddings (Cloudflare Workers AI has free-tier text-embedding models that would run inside the same Workers/D1 infrastructure already in use, avoiding a new hosting dependency), or do something closer to the Obsidian plugins' approach is an open question — but it should start from what's already here rather than a clean-slate design.
+
+Separately, the user asked earlier in this project (not yet answered in depth) whether the `smart-connections`/`smart-lookup` Obsidian plugins themselves could be used for automated indexing and tagging. That question is still open and should be folded into this same design pass rather than answered twice.
+
+### Open questions for that pass
+- Which of the ~15 current task fields are essential at capture time vs. edit-later-if-needed? (Quick-capture today only asks for a title — this question is about the *editor*, not initial capture.)
+- Does a schema revamp mean fewer/consolidated columns, a more flexible schema (e.g. structured metadata as JSON, similar to how list preferences already live in `app_meta` rather than dedicated columns), or just a UI reorganization on top of the existing schema?
+- If AI-assisted suggestion is adopted, is it opt-in per task, always-on with an override, or something like Organize Mode's existing accept/skip/undo flow extended to task creation itself?
+- What's the actual zero-cost AI option: Cloudflare Workers AI's free tier (same infra, no new vendor), reusing whatever AI subscription the user already has access to some other way, or staying fully lexical/rule-based like `lib/organizing.ts` already is?
+- Does this redesign fold in or depend on the List Type vs item type decision (topic 1) — e.g. if item type becomes AI-suggested, does list type still need to exist as a separate manual field at all?
+
+### Consequences of leaving this open
+- Task creation/editing stays as overwhelming as it is today until this pass happens.
+- Any interim, smaller UX fixes to the editor (e.g. collapsing sections, hiding rarely-used fields) risk being throwaway work if the eventual answer is a schema revamp rather than a display change — worth keeping in mind before investing in small polish here.
