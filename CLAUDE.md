@@ -2,71 +2,65 @@
 
 # Claude Code-specific instructions
 
+The shared repository instructions are defined in `AGENTS.md`.
+Do not duplicate general repository, Git, privacy, testing, environment, or data-safety rules here.
+
 ## Communication
 
-Before sending a final response, use `/unslop` when available: plain, direct, human phrasing —
-no AI writing tells ("Here's the thing:", "Let that sink in", em-dash-heavy hedging, unearned
-enthusiasm).
+Before sending a final response, use `/unslop` when available.
 
-## Burner Board implementation roadmap
+## Burner Board roadmap implementation
 
 When explicitly asked to work from `docs/plans/burner-board-roadmap.md`:
 
+- Read the roadmap and relevant repository documentation before implementing.
 - Implement only the currently authorized phase or coherent slice.
-- Do not begin a future phase simply because it appears in the roadmap.
+- Do not begin later phases merely because they appear in the roadmap.
 - Make routine, reversible engineering decisions yourself.
-- Stop only for material unresolved gates or owner decisions.
-- Continue independent work when one part is blocked.
-- At a phase handoff, report:
-  - phase/slice completed
-  - files changed
-  - migrations
-  - verification commands and actual results
-  - manual verification
-  - unresolved issues
-  - rollback implications
-  - exact next unblocked action
+- Resolve questions from repository evidence when possible.
+- Continue independent work when one portion is blocked.
+- Stop only for material architecture, product, authorization, destructive-operation,
+  credential, billing, production-data, or other owner-decision gates.
 
-## Git commits
+At each phase or slice handoff, report:
 
-This is a **public** GitHub repo (owner: `Adam-Kosicki`): https://github.com/Adam-Kosicki/notion-todo-dashboard
+- phase/slice completed
+- files changed
+- migrations
+- verification commands and actual results
+- manual verification
+- unresolved issues
+- rollback implications
+- exact next unblocked action
 
-- **Split commits by feature**, not one mega-commit per session. When a session touches several distinct features (e.g. "Lists", "Tags", "UI polish"), commit each separately with its own message, even if that means staging the same shared file more than once across commits as it evolves.
-- If splitting cleanly would require fragile manual patch/hunk surgery (interleaved changes across many shared files, no interactive `git add -p` available), it's fine to fall back to fewer/combined commits rather than risk a broken repo state — but say so explicitly instead of silently skipping the split.
-- **Before every commit**, confirm nothing sensitive is going in:
-  - `git status` / `git diff` review of exactly what's staged.
-  - Confirm `.wrangler/`, `.env*`, `.dev.vars*`, `*.sqlite`, `*.db*` are covered by `.gitignore` (they already are — don't remove those entries) and aren't showing up in `git status`.
-  - Grep staged/new content for things like `ntn_`, API keys, tokens, passwords before committing, not after.
-- Never commit the local D1 database file or any backup of it (`.wrangler/state/**/*.sqlite*`) — it contains real personal task data and encrypted Notion/Todoist tokens.
+## Claude subagents
 
-## Local dev environment
+Use project subagents only when their specialized role is useful.
 
-- `node`/`npm` are not on the default PATH in this environment; a working Node install lives at `D:\DevOps`. Git Bash sessions get this from `~/.bashrc`/`~/.bash_profile` (`export PATH="/d/DevOps:$PATH"`) already — a fresh terminal should just work.
-- `npm run dev` (the `dev` script) fails under `cmd.exe` because it sets an env var with POSIX syntax (`WRANGLER_LOG_PATH=... vite`). Run it directly instead from Git Bash:
-  ```
-  WRANGLER_LOG_PATH=.wrangler/wrangler.log ./node_modules/.bin/vite
-  ```
-- The local D1 database (Miniflare-simulated) lives under `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite`. New Drizzle migrations (`npx drizzle-kit generate`) are applied to that file with `scripts/migrate-board.mjs` (dry-run/check/apply/seed modes — see `docs/operations/data-recovery.md`); there's no `wrangler.toml` in this project (config is inline in `vite.config.ts`), so `wrangler d1 migrations apply` isn't available. Always back up that sqlite file before applying a new migration to it (it holds real data).
-- This app has a **live Notion connection** in this dev environment. Treat existing items/lists as real data: prefer creating disposable test items/lists (named e.g. `Zz Test ...`) for verification, and clean them up (archive/delete) afterward, rather than editing real rows.
+`.claude/agents/documentation-agent.md` maintains `docs/ARCHITECTURE.md`
+and `CONTEXT.md`.
 
-## Generated files
+Do not spawn subagents reflexively for work that can be completed directly.
 
-Do not inspect or modify `worker-configuration.d.ts` unless the task explicitly concerns Cloudflare Worker runtime type generation.
+When using a subagent:
 
-It is generated by Wrangler and is not application source code.
+- give it a bounded task;
+- avoid duplicating work already being performed by the main session;
+- review its result before relying on it;
+- keep durable implementation decisions in repository files rather than only in chat history.
 
-## Adam's raw planning notes (`docs/adr/local/`)
+## Astra / Claude handoff
 
-When Adam gives direction on how the project should work or be built — planning talk, not a
-concrete implementation request — save his message **verbatim** (his exact wording, not a
-paraphrase) into `docs/adr/local/<topic>.md`, following the format in that folder's README.
-This is separate from writing an ADR: it's the raw source material, kept local-only
-(gitignored from the main repo, never committed or pushed there). Still write/update the
-polished ADR in `docs/adr/` as usual when the topic warrants one — the local file supplements
-it, it doesn't replace it.
+Claude Code is normally the implementation agent for the Burner Board roadmap.
+GPT-6 Astra may act as architecture/review after a completed phase or coherent slice.
 
-`docs/adr/local/` is itself a separate, independent git repository (no remote — never pushed
-anywhere), specifically so this content survives a `git clean` or general bit-rot in the main
-repo instead of being plain gitignored with zero protection. **After adding or editing anything
-in that folder, also commit it there**: `cd docs/adr/local && git add -A && git commit -m "..."`.
-An uncommitted change in that nested repo has no more protection than before it existed.
+Before handing work back for review:
+
+- leave the repository in a reviewable state;
+- preserve existing unrelated work;
+- commit implementation in sensible feature/slice commits when practical;
+- record actual verification results;
+- surface only genuinely unresolved questions or risks.
+
+Do not require Astra to reconstruct implementation details from Claude's chat history.
+The repository, roadmap, commits, and handoff summary should contain the durable evidence.

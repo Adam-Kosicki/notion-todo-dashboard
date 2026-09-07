@@ -1,65 +1,75 @@
-# Working conventions for this repo (Codex)
+# Burner Board repository instructions
 
-This is the Codex equivalent of this repo's `CLAUDE.md` — Codex reads `AGENTS.md`, not
-`CLAUDE.md`, so the working conventions are duplicated here rather than left for Codex to
-miss. If you're editing one, check whether the other needs the same edit.
+These are the provider-neutral working conventions for this repository.
+Claude Code imports this file from `CLAUDE.md`; Codex reads it directly.
 
-GPT-6 Astra orchestration guidance (delegate substantial work to GPT-5.6 Terra/Sol
-subagents, act as coordinator/reviewer) is set up globally in `~/.codex/AGENTS.md` and
-`~/.codex/astra.config.toml` — it doesn't need repeating here.
+## Repository and data safety
 
-## Git commits
+This is a public GitHub repository:
+`Adam-Kosicki/notion-todo-dashboard`.
 
-This is a **public** GitHub repo (owner: `Adam-Kosicki`): https://github.com/Adam-Kosicki/notion-todo-dashboard
+Existing development data is real personal data.
 
-- **Split commits by feature**, not one mega-commit per session. When a session touches
-  several distinct features, commit each separately with its own message.
-- If splitting cleanly would require fragile manual patch/hunk surgery, it's fine to fall
-  back to fewer/combined commits rather than risk a broken repo state — but say so
-  explicitly instead of silently skipping the split.
-- **Before every commit**, confirm nothing sensitive is going in: review exactly what's
-  staged (`git status`/`git diff`), confirm `.wrangler/`, `.env*`, `.dev.vars*`, `*.sqlite`,
-  `*.db*` are covered by `.gitignore` and aren't showing up in `git status`, and grep
-  staged/new content for things like `ntn_`, API keys, tokens, passwords before committing.
-- Never commit the local D1 database file or any backup of it
-  (`.wrangler/state/**/*.sqlite*`) — it contains real personal task data and encrypted
-  Notion tokens.
+- Never commit secrets, credentials, tokens, private exports, or real database files.
+- Never commit `.wrangler/state/**/*.sqlite*` or database backups.
+- Keep `.wrangler/`, `.env*`, `.dev.vars*`, `*.sqlite`, and `*.db*` ignored.
+- Before every commit, inspect exactly what is staged with `git status` and `git diff`.
+- Check new/staged content for tokens, passwords, API keys, and similar secrets.
+- Prefer synthetic/disposable records such as `Zz Test ...` for verification.
+- Do not modify real items merely to create test fixtures.
+- Do not deploy, migrate production data, delete personal data, or enable paid/external
+  services without explicit authorization for that action.
 
-## Local dev environment
+## Git
 
-- `node`/`npm` are not on the default PATH in this environment; a working Node install lives
-  at `D:\DevOps`. Git Bash sessions get this from `~/.bashrc`/`~/.bash_profile` already.
-- `npm run dev` fails under `cmd.exe` because it sets an env var with POSIX syntax. Run it
-  directly from Git Bash instead:
-  ```
-  WRANGLER_LOG_PATH=.wrangler/wrangler.log ./node_modules/.bin/vite
-  ```
-- The local D1 database (Miniflare-simulated) lives under
-  `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite`. New Drizzle migrations
-  (`npx drizzle-kit generate`) need to be applied to that file by hand with `sqlite3` — there's
-  no `wrangler.toml` in this project (config is inline in `vite.config.ts`), so
-  `wrangler d1 migrations apply` isn't available. Always back up that sqlite file before
-  applying a new migration to it (it holds real data).
-- This app has a **live Notion connection** in this dev environment. Treat existing
-  items/lists as real data: prefer creating disposable test items/lists (named e.g.
-  `Zz Test ...`) for verification, and clean them up (archive/delete) afterward, rather than
-  editing real rows.
+- Split commits by coherent feature or implementation slice when practical.
+- Do not force fragile patch surgery merely to create artificial commit boundaries.
+- Do not include private AI-session URLs or session identifiers in public commit messages.
+- AI co-author attribution is acceptable.
+- Preserve unrelated pre-existing changes.
+- Do not reset, clean, or reformat unrelated user work.
+
+## Local development
+
+The primary development machine is Windows.
+
+- Git Bash is the preferred shell for repository commands.
+- Node/npm live at `D:\DevOps` and are added to PATH by the Git Bash profile.
+- `npm run dev` uses POSIX environment-variable syntax and should be run from Git Bash.
+- The local Miniflare/D1 database is under `.wrangler/state/`.
+- Use the repository migration tooling and `docs/operations/data-recovery.md`
+  rather than inventing migration commands.
+- Back up real local data before authorized schema changes.
+
+## Verification
+
+Use verification proportional to the change.
+
+Existing baseline commands include:
+
+```bash
+npm run typecheck
+npm run lint
+npm test
+```
+
+`npm run test:domain`, `npm run test:db`, and `npm run test:flows` do not exist as separate
+scripts yet — the tests introduced so far (`tests/commands.test.mjs`, `tests/identity.test.mjs`,
+`tests/migrations.test.mjs`, `tests/list-behavior.test.mjs`) run as part of `npm test`'s
+`node --test tests/*.test.mjs`. Introduce the named scripts if a future phase's test volume
+makes the split worth it.
 
 ## Generated files
 
 Do not inspect or modify `worker-configuration.d.ts` unless the task explicitly concerns
-Cloudflare Worker runtime type generation. It is generated by Wrangler and is not
-application source code.
+Cloudflare Worker runtime type generation. It is generated by Wrangler and is not application
+source code.
 
-## Documentation
+## Adam's raw planning notes (`docs/adr/local/`)
 
-`docs/ARCHITECTURE.md` and `CONTEXT.md` are the handoff docs for a fresh AI picking this
-project up cold — read them first. `docs/adr/*.md` records past architecture decisions;
-`docs/adr/0003-deferred-questions-for-astra.md` is a running list of open questions
-deliberately left unimplemented for a future planning pass. `docs/adr/local/` holds Adam's
-raw verbatim planning notes — gitignored, not for an agent to read or write.
-
-## Communication style
-
-Plain, direct, human phrasing. No AI writing tells ("Here's the thing:", "Let that sink in",
-em-dash-heavy hedging, unearned enthusiasm).
+When Adam gives direction on how the project should work or be built — planning talk, not a
+concrete implementation request — save his message verbatim (his exact wording, not a
+paraphrase) into `docs/adr/local/<topic>.md`, following the format in that folder's README.
+This is separate from writing an ADR: it's the raw source material. `docs/adr/local/` is its
+own independent, remote-less git repository (not part of this repo's history, never pushed) —
+after adding or editing anything there, commit it in that nested repo too.

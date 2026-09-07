@@ -4,8 +4,23 @@ This folder holds Adam's planning/direction messages verbatim — his own wordin
 not the AI's paraphrase of them. It exists so he can scroll back later and see exactly what
 he asked for and how he framed it, without digging through chat history.
 
-Nothing in this folder (besides this README) is tracked by git or pushed anywhere — see
-`.gitignore` (`/docs/adr/local/*`). It's local notes only.
+Nothing in this folder is tracked by the main project repo or pushed anywhere — see
+`.gitignore` (`/docs/adr/local/*`). It's local notes only, never public.
+
+**This folder is its own separate, independent git repository** (`docs/adr/local/.git/`,
+`git init`'d directly here, no remote configured — never pushed anywhere). That's deliberate:
+plain gitignored files have zero protection against an accidental `git clean -fdx` in the main
+repo, or general bit-rot. A real (if tiny) git history means this content can survive that:
+`git clean -fd` (the common form, no `-x`) never touches this folder at all; even
+`git clean -fdx -ff` (Git's own strongest override) still refuses to remove `.git/` itself —
+worst case, the *working copy* of a file here could vanish, but the committed content is safe
+in this repo's own history and trivially restorable:
+```
+cd docs/adr/local && git checkout HEAD -- .
+```
+**After adding or editing anything here, commit it in this nested repo too**
+(`cd docs/adr/local && git add -A && git commit -m "..."`) — an uncommitted change here has
+no more protection than a plain gitignored file did before.
 
 ## Convention
 
