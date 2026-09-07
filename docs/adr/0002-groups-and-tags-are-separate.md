@@ -17,6 +17,18 @@ Tags follow the existing `context` field's implementation pattern (comma-separat
 ## Status update — 2026-09-04
 Both implemented. Tags: schema, Notion sync, blob-pill picker UI. Groups: `group_id` column + `mergeItems`/`unlinkFromGroup`/`disbandGroup` server actions, drag-one-row-onto-another to merge (confirmed with the user: two clarifying questions resolved this open score-formula question and the display model — see Consequences), a single collapsed row that expands to show members, per-member unlink, and whole-group disband. Scoped to the Today/This week/Longer/Prioritize/Reminders/Finished views (`TaskTable`-based); the Lists+goals view still shows grouped items individually rather than collapsed — a deliberate v1 scope cut, not an oversight.
 
+## Status update — 2026-09-07
+The Tags half of this decision no longer applies: the tag picker UI, its CSS, and the
+tag-suggestion carry-over in `lib/organizing.ts` were removed entirely later this session. The
+`items.tags` column, the `BoardItem.tags` field, and the Notion `Tags` multi-select mapping were
+left in place (still read by Home's search filter, still round-tripped in `syncNotion()`), so
+existing tag data is not lost, but there is no UI left to view or edit it. Groups were not
+touched and this ADR's Groups decision still stands as written — including the
+"Lists+goals view doesn't collapse groups" line above, which is now also stale for an unrelated
+reason: that view (`CollectionsView`) does call `collapseGroups()` today, most likely because
+Plan and Lists+goals were later merged into one Home page. Trust the code
+(`lib/server/board-store.ts`, `app/board-app.tsx`) over this ADR's prose for both points.
+
 ## Consequences
 - Two separate schema and UI surfaces to build instead of one.
 - Avoids the alternative's real failure mode: under a single unified mechanism, tagging a task "Sports" would either force it to lose its individual attention score, or physically stick it to every other "Sports" task's position — neither of which the user wants from a category label.
