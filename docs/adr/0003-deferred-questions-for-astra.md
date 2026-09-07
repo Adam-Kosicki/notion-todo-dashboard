@@ -190,3 +190,55 @@ This is the umbrella that topics 3, 7, and 8 above all sit under - an overloaded
 - Whatever ASTRA decides for topic 3 (task view overload) and topic 8 (AI-assisted planning) should probably be designed against this vision statement directly, rather than as isolated features - the user is describing a shift in where the *work* of organizing happens (from the user, to the app/AI), not just a UI polish pass.
 - What would "nudges for neglected tasks" look like concretely: a Home widget (similar to the Upcoming-due-dates widget already shipped), a notification, a dedicated view, or something that surfaces inline wherever the task would normally appear?
 - Same zero-cost AI constraint as topics 3 and 8 applies throughout.
+
+## 10. Full AI-assisted planning, notifications, and workspace-cleanup vision (elaborates topics 3, 7, 8, 9)
+
+### Status
+Deferred — 2026-09-07. The user's own words, given as the authoritative elaboration of topics 3/7/8/9 above, explicitly to hand off to GPT ASTRA for planning — not a build request this pass.
+
+### Context
+The user's full framing lives verbatim in `docs/adr/local/ai-assisted-planning-vision.md` (gitignored, not for git — see `docs/adr/local/README.md` for the convention). What follows is the structured summary for ASTRA.
+
+**Runtime constraint, stated concretely for the first time:** the AI implementation must run on the user's existing ChatGPT Plus and $20/mo Claude subscriptions, not metered API billing. The user's own proposed mechanism: a custom MCP server, so their subscription chat clients (not API keys) do the actual reasoning work by connecting to this app's data as an MCP tool provider. This directly sharpens topic 2 (Notion vs D1): whichever store wins needs to be reachable as an MCP server from a subscription-based chat client specifically, not just from a coded backend calling a paid API.
+
+**Core loop the user wants**, illustrated with their own worked example ("I gained fat, don't know whether to bulk or cut"):
+1. User states a goal/problem in their own words, optionally attaching files or freeform context, and characterizes it as long-term (slow, ongoing) or short-term (quick to finish) — no due date required up front.
+2. AI does not assume missing information — it asks clarifying questions using the existing `/grilling` / `/grill-me` skills, per explicit user instruction: "the ai will not make assumptions and instead use skills for example '/grill-me' or '/grilling' to get important information."
+3. Once enough context exists, AI proposes a plan: breaks the goal into subtasks/milestones, suggests due dates informed by context (e.g. "your week doesn't look busy, let's get started"), and can suggest filing the task into an existing list ("this table already exists, let's put this in there") or creating a new one. The user reviews and can push back — final say stays with the user: "the ai will make suggestions, how does this plan sound for you?"
+4. AI tracks adherence over time: pushed-back/snoozed due dates and missed check-ins are recorded and surfaced back to the user ("i haven't made progress, is this still a priority?"), and the plan adapts.
+5. Recurring daily/weekly/monthly summary check-ins — explicitly called out as a setup priority: "a way for my ai from my subscriptions to send me notifications and say yes this is what you need to get done, this is what your week is looking like, your week looks empty."
+
+**Scoping mechanism to control AI usage/cost:** the user explicitly does not want AI running over the entire database at all times: "i dont want it to always be active on everything otherwise itll use all my usage limits for claude and chatgpt subscriptions." Their proposed mechanism: the user manually curates a bounded "active/priority" set — tasks/goals explicitly flagged as "help me with these right now" — and AI only works from that curated set, never the full unsorted backlog. This needs first-class UI support (quick, easy selection into that set), not just an existing list repurposed. The user separately proposed the same usage-conserving shape for model selection: "lower tier agents can ask the user for context and higher tier smarter agents will help with planning it out and delegating out tasks" — the same expensive-orchestrator-delegates-to-cheap-workers pattern already implemented this session for the Codex/GPT-6 Astra coding workflow (`~/.codex/astra.config.toml`: Astra delegates bounded work to cheaper Terra/Sol subagents rather than doing everything itself), grounded in the same OpenAI guide the user pointed at again here: https://developers.openai.com/api/docs/guides/latest-model.
+
+**Workspace cleanup, a related but separate ask:** the user bulk-imported Apple Reminders, Google Tasks, and Apple Calendar into this app, and much of it lacks metadata and is unorganized — recurring monthly payments, scheduled bills, recurring events (e.g. "volleyball at rec center on Monday"), goals (e.g. "lose fat"), and networking contacts ("contact my references... to look for a better job") are all mixed together with no clear way to tell what's important. The user wants AI to suggest regrouping, propose new lists, and generally help tidy the existing mess — overlapping with topic 1 (list type) and topic 9 (product vision) but now grounded in a concrete real-data cleanup use case rather than an abstract principle.
+
+### Existing resources to build from, not from scratch (explicit user instruction)
+The user was explicit: find and reuse existing skills and source code rather than building everything new — "i know there are existing skills that do all of the stuff and delegation work so we can find those skills instead of having to make them from scratch or work off of them at least."
+
+**A parallel planning project already exists locally, further along than anything documented in this repo's ADRs**: `C:\Users\maste\Desktop\Todo-List-Back-Burner Project\Backburner\`. It has its own README, `CONTEXT.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/COMPETITIVE-ANALYSIS.md`, `docs/OSS-CONTRIBUTIONS.md`, 4 ADRs (`docs/adr/0001`–`0004`), and detailed specs (`specs/attention-engine.md`, `capture-pipeline.md`, `goal-decomposition.md`, `nudge-engine.md`, `suggestion-box.md`, `evaluations.md`) describing almost exactly this same vision under the name "Backburner: an intelligent attention layer" — zero-friction capture, automated goal decomposition, a deterministic (non-LLM) attention-scoring engine, and an LLM-driven contextual nudge engine. **ASTRA should read that project's docs before designing anything here** — a large fraction of this design question may already be answered there.
+
+**Candidate source repos already cloned locally** for reuse, at `Backburner\existing-projects\` (full list with GitHub URLs in `Backburner\existing-projects\repos.txt`): AllisWell, FreeTodo, Super Productivity, ADHD Planner AI, Ilseon, Open Tasks, vividvilla/todo, Vikunja, Vikunja Reminder Agent, and **SP-MCP** — an existing MCP server built for Super Productivity, directly relevant prior art for the "MCP server + subscription client" mechanism above, since it's a real, working example of the same shape.
+
+**Candidate skills found** (via `npx skills find` this session, not installed — evaluate before adopting):
+- `jwynia/agent-skills@task-decomposition` (581 installs) — goal/task breakdown, closest match to the "break goals into subtasks" need.
+- `anthropics/claude-plugins-official@build-mcp-server` (5.5K installs, official Anthropic) — building an MCP server, directly relevant to the subscription-based architecture above.
+- `cloudflare/skills@building-mcp-server-on-cloudflare` (3.6K installs) — MCP server specifically on Cloudflare Workers, this app's existing host.
+- No strong existing skill was found for the daily/weekly/monthly summary notification piece specifically — that likely needs custom work regardless.
+- `/grilling` and `/grill-me` (already available in this environment) are the user's own named mechanism for the "ask clarifying questions, don't assume" requirement — a real, working pattern already, not hypothetical.
+
+### Cross-references
+- Elaborates and largely supersedes the brief mentions in topics 3 (AI-assisted task creation), 7 (attention weighting/nudges), 8 ("let AI plan your day"), and 9 (product vision) above — those remain as the historical record of what was said first; this topic is the fuller, later elaboration.
+- Directly extends topic 2 (Notion vs D1): whichever wins needs to be reachable as an MCP server from a subscription-based chat client specifically.
+- The zero-cost/subscription-only AI constraint from topics 3/8/9 is now sharpened into a specific mechanism (subscription-connected MCP server) rather than a general "must be free" requirement.
+
+### Open questions for that pass
+- MCP server design: what does it expose (read/write task data as tools/resources), and how does a ChatGPT Plus/Claude subscription client actually connect to and drive it — a remote MCP server the user manually adds to their ChatGPT/Claude client, or something more automatic?
+- Model tiering for the in-app AI features themselves (distinct from the Codex/Astra dev-tooling tiering already configured this session): which parts are cheap-model routine (asking clarifying questions, drafting summaries) vs. expensive-model (synthesis, planning, conflict resolution)?
+- Shape of the "curated active/priority set" UI: a special reserved list, a tag/flag on any item, something else? How does it interact with existing Pinned lists and the Goals/Calendar pages?
+- Shape of the adaptive due-date/snooze tracking: a new field, reuse of the existing dormant `lastNudge`/`lastInteraction` (see topic 7), or something new entirely?
+- Notification delivery mechanism: `docs/PRODUCT_SPEC.md`'s existing "Future integration work" section already names Apple Reminders / Google Calendar as candidate delivery providers for reminder scheduling — does the new daily/weekly/monthly AI summary/nudge system reuse that same delivery channel, or need its own?
+- How much of Backburner's existing design (attention engine, nudge engine, capture pipeline specs) should be adopted wholesale into Burner Board vs. adapted vs. kept as a separate project entirely?
+
+### Consequences of leaving this open
+- This is now the single most detailed vision statement in this ADR file — any future work on topics 1, 2, 3, 7, 8, or 9 should probably be checked against it first rather than planned in isolation.
+- The Backburner project and its cloned candidate repos exist and are directly relevant; not consulting them before designing this from scratch would be redundant, avoidable work.
