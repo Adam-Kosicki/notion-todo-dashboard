@@ -60,6 +60,7 @@ import {
   listActivityEventsForItems,
   listWeekCommitments,
   removeFocusItemStmt,
+  revisionGuard,
   saveReceipt,
   setFocusItemStmt,
   upsertWeekCommitmentStmt,
@@ -343,20 +344,43 @@ async function listsDelete(db: Database, ownerId: string, input: ListsDeleteInpu
 type AtomicPlan = {
   /** Raw SQL boolean expression (may reference its own `?` placeholders, filled from
    * `guardParams`) that must still hold when the batch actually runs. `"1=1"` for commands with
-   * no meaningful race condition to guard against. */
+   * no meaningful domain race condition to guard against - applyAtomicPlan ANDs this with a
+   * mandatory board-revision check regardless (see expectedBoardRevision below), so this field is
+   * only ever the command's own DOMAIN-specific precondition.
+   *
+   * Astra review (remediation round, P1#2): this MUST be the exact same precondition
+   * `primaryStatement`'s own WHERE clause checks - not a subset of it. week.withdraw originally
+   * guarded bookkeeping on "week open" alone while its primary UPDATE also required
+   * "withdrawn_at IS NULL"; two overlapping withdrawals could then have the primary UPDATE affect
+   * zero rows (already withdrawn by the other one) while the bookkeeping guard still passed,
+   * producing a stored success receipt for a command that returned CONFLICT. Always mirror
+   * primaryStatement's full WHERE here. */
   guardSql: string;
   guardParams: unknown[];
-  /** The command's own mutation. Must be ordered so nothing earlier in the batch mutates a row
-   * `guardSql` reads (see week.close's finalize, which mutates the very row its guard reads -
-   * that's why it's built to run last). */
+  /**
+   * Astra review (remediation round, P1#3): captured by the handler (via getBoardState),
+   * ideally as close as practical to when primaryStatement is built - not reused from an earlier
+   * read elsewhere in the command pipeline. applyAtomicPlan folds `revision = expectedBoardRevision`
+   * into every statement's guard (bookkeeping AND primaryStatement itself, via repository.ts's
+   * revisionGuard/Stmt-builders), so `expectedBoardRevision + 1` is only ever reported/receipted
+   * when the database actually reached it - never guessed under concurrent commands for the same
+   * owner.
+   */
+  expectedBoardRevision: number;
+  /** The command's own mutation; its own WHERE/SELECT clause must independently embed BOTH
+   * `guardSql`'s domain condition and revisionGuard(ownerId, expectedBoardRevision) - see
+   * repository.ts's Stmt-builders. Must be ordered so nothing earlier in the batch mutates a row
+   * either guard reads (see week.close's finalize, which mutates the very row its domain guard
+   * reads - that's why it's built to run before the revision bump but after bookkeeping). */
   primaryStatement: PreparedStatement;
   result: unknown;
   changedItemIds: string[];
   changedListIds: string[];
   activity: Array<{ entityId: string; eventType: string; before: unknown; after: unknown }>;
-  /** Called only if primaryStatement affected zero rows. `null` means zero rows is still a
-   * legitimate success (e.g. focus.set removing an already-absent item) - never treated as a
-   * failure. */
+  /** Called only if primaryStatement affected zero rows AND the board-revision CAS held (a CAS
+   * failure is always reported as CONFLICT, regardless of this field). `null` means zero rows is
+   * still a legitimate success (e.g. focus.set removing an already-absent item) - never treated
+   * as a failure. */
   onZeroChanges: (() => CommandError) | null;
 };
 
@@ -366,15 +390,17 @@ type AtomicOutcome = { kind: "atomic"; plan: AtomicPlan };
 async function focusSetPlan(db: Database, ownerId: string, input: FocusSetInput): Promise<AtomicOutcome> {
   const item = await findItemRow(db, ownerId, input.itemId);
   if (!item) throw new CommandError("VALIDATION_FAILED", "itemId does not refer to an existing item.");
+  const { revision: expectedBoardRevision } = await getBoardState(db, ownerId);
   const now = new Date().toISOString();
   const primaryStatement = input.focused
-    ? setFocusItemStmt(db, ownerId, input.itemId, input.reviewUntil ?? null, now)
-    : removeFocusItemStmt(db, ownerId, input.itemId);
+    ? setFocusItemStmt(db, ownerId, input.itemId, input.reviewUntil ?? null, now, expectedBoardRevision)
+    : removeFocusItemStmt(db, ownerId, input.itemId, expectedBoardRevision);
   return {
     kind: "atomic",
     plan: {
       guardSql: "1=1",
       guardParams: [],
+      expectedBoardRevision,
       primaryStatement,
       result: { itemId: input.itemId, focused: input.focused },
       changedItemIds: [input.itemId],
@@ -405,13 +431,15 @@ async function weekCommitPlan(db: Database, ownerId: string, input: WeekCommitIn
 
   // Either a brand-new commitment or re-adding a previously withdrawn one - both go through the
   // same upsert (roadmap Phase 3 acceptance criteria requires add/withdraw/re-add).
+  const { revision: expectedBoardRevision } = await getBoardState(db, ownerId);
   const now = new Date().toISOString();
   return {
     kind: "atomic",
     plan: {
       guardSql: "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')",
       guardParams: [ownerId, input.weekId],
-      primaryStatement: upsertWeekCommitmentStmt(db, ownerId, input.weekId, input.itemId, now),
+      expectedBoardRevision,
+      primaryStatement: upsertWeekCommitmentStmt(db, ownerId, input.weekId, input.itemId, now, expectedBoardRevision),
       result: { weekId: input.weekId, itemId: input.itemId },
       changedItemIds: [input.itemId],
       changedListIds: [],
@@ -431,18 +459,26 @@ async function weekWithdrawPlan(db: Database, ownerId: string, input: WeekWithdr
     return { kind: "noop", outcome: { result: { weekId: input.weekId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] } };
   }
 
+  const { revision: expectedBoardRevision } = await getBoardState(db, ownerId);
   const now = new Date().toISOString();
   return {
     kind: "atomic",
     plan: {
-      guardSql: "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')",
-      guardParams: [ownerId, input.weekId],
-      primaryStatement: withdrawWeekCommitmentStmt(db, ownerId, input.weekId, input.itemId, input.reason ?? null, now),
+      // Astra P1#2: this must mirror withdrawWeekCommitmentStmt's own full WHERE clause exactly -
+      // "week open" alone isn't enough, since the primary statement ALSO requires the commitment
+      // to still be active. Two overlapping withdrawals for the same item must not both pass this
+      // guard - see the AtomicPlan.guardSql doc comment above.
+      guardSql:
+        "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')" +
+        " AND EXISTS (SELECT 1 FROM week_commitments WHERE owner_id = ? AND week_id = ? AND item_id = ? AND withdrawn_at IS NULL)",
+      guardParams: [ownerId, input.weekId, ownerId, input.weekId, input.itemId],
+      expectedBoardRevision,
+      primaryStatement: withdrawWeekCommitmentStmt(db, ownerId, input.weekId, input.itemId, input.reason ?? null, now, expectedBoardRevision),
       result: { weekId: input.weekId, itemId: input.itemId },
       changedItemIds: [input.itemId],
       changedListIds: [],
       activity: [{ entityId: input.itemId, eventType: "week.withdraw", before: null, after: { reason: input.reason ?? null } }],
-      onZeroChanges: () => new CommandError("CONFLICT", "This week is closed."),
+      onZeroChanges: () => new CommandError("CONFLICT", "This week is closed, or the commitment was already withdrawn by another request."),
     },
   };
 }
@@ -486,70 +522,107 @@ async function weekClosePlan(db: Database, ownerId: string, input: WeekCloseInpu
   itemRows.forEach((row, index) => {
     if (row) itemsById[itemIds[index]] = { itemType: row.item_type };
   });
-  const events = await listActivityEventsForItems(db, ownerId, itemIds, ["items.complete", "items.reopen"]);
+  // Astra review (remediation round, repository.ts:275): on-time credit is no longer decided from
+  // a single added_at snapshot column - see lib/domain/progress.ts's computeWeekStats, which
+  // replays the full week.commit/week.withdraw history alongside complete/reopen to know whether
+  // an item was actually active at the moment it was completed.
+  const allEvents = await listActivityEventsForItems(db, ownerId, itemIds, ["items.complete", "items.reopen", "week.commit", "week.withdraw"]);
+  const statusEvents = allEvents.filter((event): event is typeof event & { event_type: "items.complete" | "items.reopen" } =>
+    event.event_type === "items.complete" || event.event_type === "items.reopen",
+  );
+  const commitmentEvents = allEvents.filter((event): event is typeof event & { event_type: "week.commit" | "week.withdraw" } =>
+    event.event_type === "week.commit" || event.event_type === "week.withdraw",
+  );
 
   const stats = computeWeekStats({
     week: { startDate: week!.start_date, endDate: weekEndDate(week!.start_date), timezone: week!.timezone },
     commitments: commitments.map((commitment) => ({
       itemId: commitment.item_id,
-      addedAt: commitment.added_at,
       withdrawnAt: commitment.withdrawn_at,
     })),
     itemsById,
-    events: events.map((event) => ({
-      itemId: event.entity_id,
-      eventType: event.event_type as "items.complete" | "items.reopen",
-      timestamp: event.timestamp,
-    })),
+    events: statusEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
+    commitmentEvents: commitmentEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
   });
 
+  // Astra P1#3: captured as late as practical, right before building the finalize batch, since
+  // weekClose's read-compute step above can take a while - minimizing the window in which a
+  // concurrent, unrelated command could bump the owner's revision and force a spurious retry here.
+  const { revision: expectedBoardRevision } = await getBoardState(db, ownerId);
   return {
     kind: "atomic",
     plan: {
       guardSql: "EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'closing')",
       guardParams: [ownerId, input.weekId],
-      primaryStatement: finalizeClosedPlanningWeekStmt(db, ownerId, input.weekId, JSON.stringify(stats)),
+      expectedBoardRevision,
+      primaryStatement: finalizeClosedPlanningWeekStmt(db, ownerId, input.weekId, JSON.stringify(stats), expectedBoardRevision),
       result: stats,
       changedItemIds: [],
       changedListIds: [],
       activity: [{ entityId: input.weekId, eventType: "week.close", before: null, after: stats }],
       // Should be unreachable - this request holds the exclusive 'closing' lock it just
-      // confirmed - but a failure here must not be reported as success.
-      onZeroChanges: () => new CommandError("INTERNAL_ERROR", "Failed to finalize the week close."),
+      // confirmed - but a failure here must not be reported as success. A CONFLICT (not
+      // INTERNAL_ERROR) since the far more likely cause is a concurrent unrelated command having
+      // bumped the board revision during the read-compute step above; retrying is the right move.
+      onZeroChanges: () => new CommandError("CONFLICT", "The board changed while closing this week; retry."),
     },
   };
 }
 
-/** Executes an AtomicPlan as one `db.batch()`: the guard-gated revision bump, guard-gated
- * activity event(s), and guard-gated receipt all run BEFORE the plan's own primary statement, so
- * a primary statement that mutates the very row the guard reads (week.close's finalize) can't
- * flip the guard for the bookkeeping statements that are supposed to share its outcome. */
+/**
+ * Executes an AtomicPlan as one `db.batch()`.
+ *
+ * Astra review (remediation round, P1#3): every statement - bookkeeping AND `primaryStatement`
+ * itself, via repository.ts's Stmt-builders - shares the identical combined guard (`plan.guardSql`
+ * AND `revision = expectedBoardRevision`). Statement order: [activity event(s), receipt,
+ * primaryStatement, revision-bump]. Bookkeeping runs first so it reads every guarded table's
+ * pre-image; `primaryStatement` runs next, mutating its domain table (whose pre-image every
+ * earlier statement already read) while its own embedded revision check still sees board_state's
+ * pre-image (the bump hasn't run yet); the revision bump runs last.
+ *
+ * Two independent signals come out of `results`, and they are NOT interchangeable:
+ * - `guardHeld` (from the RECEIPT statement's own change count): did the whole plan's
+ *   precondition - domain guard AND revision guard - hold, evaluated against the untouched
+ *   pre-image? A "no" is always CONFLICT, regardless of `onZeroChanges`.
+ * - `primaryChanges` (from `primaryStatement`): given the guard held, did the domain mutation
+ *   itself apply, or was zero rows a legitimate no-op (e.g. focus.set removing an already-absent
+ *   item)? Governed by `onZeroChanges`.
+ *
+ * The revision-bump statement deliberately does NOT re-check `plan.guardSql`'s domain condition
+ * itself - an earlier version of this fix did, and it self-invalidated: a *successful*
+ * `primaryStatement` (running immediately before it) had already mutated the very row that domain
+ * condition reads, so the revision bump's own copy of that check would read back false right after
+ * a legitimate success, silently skipping the bump while still returning `success` in the
+ * response (caught by the P1#2 regression test in tests/focus-week-commands.test.mjs). Instead it
+ * checks `EXISTS (SELECT 1 FROM command_receipts WHERE ...)` for this exact request - the receipt
+ * row already evaluated the identical combined guard against the untouched pre-image, and nothing
+ * in this batch mutates command_receipts afterward, so its presence is a hazard-free stand-in for
+ * "the guard held" that a later statement can safely depend on.
+ */
 async function applyAtomicPlan(
   db: Database,
   ownerId: string,
   envelope: CommandEnvelope,
   payloadHash: string,
-  boardRevisionBefore: number,
   plan: AtomicPlan,
 ): Promise<CommandResult> {
   await ensureBoardState(db, ownerId);
-  const boardRevision = boardRevisionBefore + 1;
+  const boardRevision = plan.expectedBoardRevision + 1;
   // Bound explicitly, never left to SQLite's CURRENT_TIMESTAMP default - see appendActivityEvent's
   // comment on why that default's non-ISO format silently breaks progress.ts's instant comparisons.
   const now = new Date().toISOString();
 
+  const revision = revisionGuard(ownerId, plan.expectedBoardRevision);
+  const guardSql = `(${plan.guardSql}) AND ${revision.sql}`;
+  const guardParams = [...plan.guardParams, ...revision.params];
+
   const statements: PreparedStatement[] = [];
-  statements.push(
-    db
-      .prepare(`UPDATE board_state SET revision = revision + 1, updated_at = ? WHERE owner_id = ? AND ${plan.guardSql}`)
-      .bind(now, ownerId, ...plan.guardParams),
-  );
   for (const event of plan.activity) {
     statements.push(
       db
         .prepare(
           `INSERT INTO activity_events (id, owner_id, entity_id, actor_kind, event_type, request_id, before_json, after_json, timestamp)
-           SELECT ?, ?, ?, 'owner', ?, ?, ?, ?, ? WHERE ${plan.guardSql}`,
+           SELECT ?, ?, ?, 'owner', ?, ?, ?, ?, ? WHERE ${guardSql}`,
         )
         .bind(
           `evt_${crypto.randomUUID()}`,
@@ -560,7 +633,7 @@ async function applyAtomicPlan(
           event.before === undefined ? null : JSON.stringify(event.before),
           event.after === undefined ? null : JSON.stringify(event.after),
           now,
-          ...plan.guardParams,
+          ...guardParams,
         ),
     );
   }
@@ -573,18 +646,42 @@ async function applyAtomicPlan(
     changedItemIds: plan.changedItemIds,
     changedListIds: plan.changedListIds,
   };
+  const receiptIndex = statements.length;
   statements.push(
     db
       .prepare(
         `INSERT INTO command_receipts (owner_id, request_id, payload_hash, committed_revision, result_json)
-         SELECT ?, ?, ?, ?, ? WHERE ${plan.guardSql}`,
+         SELECT ?, ?, ?, ?, ? WHERE ${guardSql}`,
       )
-      .bind(ownerId, envelope.requestId, payloadHash, boardRevision, JSON.stringify(success), ...plan.guardParams),
+      .bind(ownerId, envelope.requestId, payloadHash, boardRevision, JSON.stringify(success), ...guardParams),
   );
+  const primaryIndex = statements.length;
   statements.push(plan.primaryStatement);
+  // The revision bump must NOT apply when the guard failed (else the global revision counter
+  // advances for a rejected command, leaving it out of step with the events/receipts actually
+  // written). But it can't re-check `plan.guardSql`'s domain condition directly: that condition
+  // reads a row `primaryStatement` (running immediately before this) may have just mutated, so a
+  // *successful* primaryStatement would make its own domain guard read back false, incorrectly
+  // failing this statement too (self-invalidation, discovered by the P1#2 regression test below).
+  // The receipt row above already evaluated the exact same combined guard against the untouched
+  // pre-image (nothing before it in this batch mutates anything the guard reads), and nothing
+  // after it touches command_receipts either - so "did my own receipt land" is a hazard-free proxy
+  // for "did the guard hold," safe to check from any later statement in the batch.
+  statements.push(
+    db
+      .prepare(
+        `UPDATE board_state SET revision = ?, updated_at = ? WHERE owner_id = ? AND revision = ?
+         AND EXISTS (SELECT 1 FROM command_receipts WHERE owner_id = ? AND request_id = ?)`,
+      )
+      .bind(boardRevision, now, ownerId, plan.expectedBoardRevision, ownerId, envelope.requestId),
+  );
 
   const results = await db.batch(statements);
-  const primaryChanges = results[results.length - 1].meta.changes;
+  const guardHeld = results[receiptIndex].meta.changes > 0;
+  if (!guardHeld) {
+    throw new CommandError("CONFLICT", "The board changed since this command started; retry.");
+  }
+  const primaryChanges = results[primaryIndex].meta.changes;
   if (primaryChanges === 0 && plan.onZeroChanges) {
     throw plan.onZeroChanges();
   }
@@ -689,7 +786,7 @@ export async function applyCommand(db: Database, ownerId: string, envelope: Comm
     if (atomicHandler) {
       const outcome = await atomicHandler(db, ownerId, parsed.data as never);
       if (outcome.kind === "atomic") {
-        return await applyAtomicPlan(db, ownerId, envelope, payloadHash, boardRevisionBefore, outcome.plan);
+        return await applyAtomicPlan(db, ownerId, envelope, payloadHash, outcome.plan);
       }
       return await finishViaBumpAndReceipt(db, ownerId, envelope, payloadHash, outcome.outcome);
     }

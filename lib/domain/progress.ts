@@ -5,13 +5,27 @@
 
 export type CommitmentInput = {
   itemId: string;
-  addedAt: string;
   withdrawnAt: string | null;
 };
 
 export type ItemEventInput = {
   itemId: string;
   eventType: "items.complete" | "items.reopen";
+  timestamp: string;
+};
+
+/**
+ * Astra review (Phase 3 slice 1 remediation, 7060176, repository.ts:275): re-adding a withdrawn
+ * commitment refreshes `week_commitments.added_at` to the re-add time, which - when on-time
+ * detection compared a completion only against that single snapshot column - erased a completion
+ * that legitimately happened during an *earlier* active period (select Monday, complete Tuesday,
+ * withdraw Wednesday, re-add Thursday used to flip 1/1 to 0/1, with no reopen involved). Fixed by
+ * using the full week.commit/week.withdraw event history instead of one current-state column -
+ * see computeWeekStats.
+ */
+export type CommitmentEventInput = {
+  itemId: string;
+  eventType: "week.commit" | "week.withdraw";
   timestamp: string;
 };
 
@@ -36,27 +50,37 @@ export type WeekStats =
     };
 
 /**
- * Astra review (Phase 3 Slice 1, c02e352): the previous implementation compared raw event
- * timestamps against plain `startDate`/`endDate` calendar-date strings, which is both timezone-
- * naive (a timestamp string like "2026-09-07T04:30:00Z" lexicographically compares as >= the
- * date-only string "2026-09-07", even though 04:30 UTC is still Sunday night in Chicago) and
- * ignores `addedAt`/commitment-selection ordering and per-week event-history bounding. Fixed by:
- * (1) resolving the week's boundaries to real UTC instants in the planning timezone via
- * `zonedMidnightUtc`, (2) requiring a completion to land at/after the commitment's `addedAt` to
- * count ("count completion events inside the week after commitment selection" - a completion
- * that predates being selected for the week isn't this week's win), and (3) evaluating each
- * week's on-time contribution only from events that happened before that week's own end instant,
- * so a reopen event that happens in a *later* week can no longer retroactively erase an earlier,
+ * Astra review (Phase 3 Slice 1, c02e352, first round): the original implementation compared raw
+ * event timestamps against plain `startDate`/`endDate` calendar-date strings, which is both
+ * timezone-naive (a timestamp string like "2026-09-07T04:30:00Z" lexicographically compares as
+ * >= the date-only string "2026-09-07", even though 04:30 UTC is still Sunday night in Chicago)
+ * and ignored per-week event-history bounding. Fixed by resolving the week's boundaries to real
+ * UTC instants in the planning timezone via `zonedMidnightUtc`, and evaluating each week's
+ * on-time contribution only from events that happened before that week's own end instant, so a
+ * reopen event that happens in a *later* week can no longer retroactively erase an earlier,
  * already-elapsed week's completion (only a reopen inside the same week reverses it, per
- * contract). Late-completion detection still looks at the full history separately.
+ * contract). Late-completion detection looks at the full history separately.
+ *
+ * Astra review (remediation round, 7060176^..1698bc8): the first round's fix still gated on-time
+ * credit with a single `commitment.addedAt >= ...` comparison - a static current-state snapshot
+ * that a later re-add's refreshed `added_at` could invalidate for a completion that legitimately
+ * happened during an *earlier* active period (repository.ts:275's finding). Fixed by replaying
+ * the item's full `week.commit`/`week.withdraw` history (`commitmentEvents`) alongside its
+ * complete/reopen history and tracking an `isActive` flag: a completion only counts toward
+ * on-time credit if the item was actively committed (a `week.commit` has fired and no
+ * `week.withdraw` since) at the moment it happened - "count completion events inside the week
+ * after commitment selection" now means "while actually selected," not merely "after the most
+ * recent selection timestamp." An item with no commit/withdraw history at all (data predating
+ * this event's introduction) is treated as active throughout, matching the previous behavior.
  */
 export function computeWeekStats(params: {
   week: { startDate: string; endDate: string; timezone: string };
   commitments: CommitmentInput[];
   itemsById: Record<string, CommitmentItemInfo>;
   events: ItemEventInput[];
+  commitmentEvents: CommitmentEventInput[];
 }): WeekStats {
-  const { week, commitments, itemsById, events } = params;
+  const { week, commitments, itemsById, events, commitmentEvents } = params;
   if (commitments.length === 0) {
     return { status: "no_commitments", label: "No tasks planned" };
   }
@@ -64,17 +88,53 @@ export function computeWeekStats(params: {
   const weekStartInstant = zonedMidnightUtc(week.startDate, week.timezone);
   const weekEndInstant = zonedMidnightUtc(week.endDate, week.timezone);
 
-  // Events must be time-sorted per item so the "last event before a cutoff wins" walks below
-  // see them in chronological order regardless of insertion order.
-  const eventsByItem = new Map<string, ItemEventInput[]>();
-  for (const event of events) {
-    const list = eventsByItem.get(event.itemId) ?? [];
-    list.push(event);
-    eventsByItem.set(event.itemId, list);
-  }
-  for (const list of eventsByItem.values()) {
-    list.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-  }
+  type Timestamped = { timestamp: string };
+  const byItem = <T extends Timestamped & { itemId: string }>(list: T[]): Map<string, T[]> => {
+    const map = new Map<string, T[]>();
+    for (const entry of list) {
+      const bucket = map.get(entry.itemId) ?? [];
+      bucket.push(entry);
+      map.set(entry.itemId, bucket);
+    }
+    for (const bucket of map.values()) bucket.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return map;
+  };
+  const eventsByItem = byItem(events);
+  const commitmentEventsByItem = byItem(commitmentEvents);
+
+  /**
+   * Replays complete/reopen events merged with commit/withdraw events, chronologically up to
+   * (but not including) `cutoff`, and returns the item's completion timestamp as of that cutoff -
+   * or null if not completed, or completed while not actively committed. `items.reopen` always
+   * clears it (matches the pre-remediation rule: reopening undoes completion regardless of
+   * commitment state); `items.complete` only sets it while `isActive`. `week.withdraw` does NOT
+   * clear a standing completion - withdrawing isn't reopening.
+   */
+  const completionAsOf = (itemId: string, cutoff: string): string | null => {
+    const itemCommitmentEvents = commitmentEventsByItem.get(itemId) ?? [];
+    const itemStatusEvents = eventsByItem.get(itemId) ?? [];
+    const merged = [
+      ...itemCommitmentEvents.map((event) => ({ ...event, kind: "commitment" as const })),
+      ...itemStatusEvents.map((event) => ({ ...event, kind: "status" as const })),
+    ]
+      .filter((event) => event.timestamp < cutoff)
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+    // No selection history at all (data predating week.commit/week.withdraw event emission) -
+    // treat as always active, matching the pre-remediation behavior for such rows.
+    let isActive = itemCommitmentEvents.length === 0;
+    let completedAt: string | null = null;
+    for (const event of merged) {
+      if (event.kind === "commitment") {
+        isActive = event.eventType === "week.commit";
+      } else if (event.eventType === "items.complete") {
+        completedAt = isActive ? event.timestamp : null;
+      } else {
+        completedAt = null;
+      }
+    }
+    return completedAt;
+  };
 
   let taskCommitments = 0;
   let completed = 0;
@@ -86,24 +146,13 @@ export function computeWeekStats(params: {
     const isTask = info ? info.itemType !== "Goal" && info.itemType !== "Reference" : true;
     if (isTask) taskCommitments++;
 
-    const itemEvents = eventsByItem.get(commitment.itemId) ?? [];
-
     // On-time contribution: the item's completion state as of the end of THIS week's window
     // only - events from a later week (e.g. a reopen the following week) must never reach back
     // and change an already-elapsed week's outcome (contract: "Closing a week freezes its
     // report. Later edits do not rewrite historical reports" - and even before closing, a later
     // week's events aren't "within" this week).
-    let completedAsOfWeekEnd: string | null = null;
-    for (const event of itemEvents) {
-      if (event.timestamp >= weekEndInstant) break;
-      completedAsOfWeekEnd = event.eventType === "items.complete" ? event.timestamp : null;
-    }
-    // Contract: "Count completion events inside the week after commitment selection" - a
-    // completion timestamped before the item was even added to this week isn't this week's win.
-    const onTime =
-      completedAsOfWeekEnd !== null &&
-      completedAsOfWeekEnd >= commitment.addedAt &&
-      completedAsOfWeekEnd >= weekStartInstant;
+    const completedAsOfWeekEnd = completionAsOf(commitment.itemId, weekEndInstant);
+    const onTime = completedAsOfWeekEnd !== null && completedAsOfWeekEnd >= weekStartInstant;
 
     if (onTime) {
       if (isTask) completed++;
@@ -115,11 +164,9 @@ export function computeWeekStats(params: {
 
     // Not on-time: a completion that still stands (not itself since reversed by a reopen) and
     // lands at/after this week's end is a late completion - contract: "Completion outside the
-    // week is shown as late completion, not rewritten as on-time success."
-    let finalState: string | null = null;
-    for (const event of itemEvents) {
-      finalState = event.eventType === "items.complete" ? event.timestamp : null;
-    }
+    // week is shown as late completion, not rewritten as on-time success." Unbounded cutoff (a
+    // timestamp guaranteed to sort after anything real) to see the full history.
+    const finalState = completionAsOf(commitment.itemId, "9999-12-31T23:59:59.999Z");
     if (finalState !== null && finalState >= weekEndInstant) lateCompletions++;
   }
 

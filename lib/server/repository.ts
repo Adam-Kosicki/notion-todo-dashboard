@@ -116,21 +116,20 @@ export async function saveReceipt(
  * as LESS than any same-day ISO instant (' ' < 'T' in ASCII) regardless of actual time of day.
  * Always bind an app-computed `timestamp` explicitly; never rely on the column default.
  */
-export async function appendActivityEvent(
-  db: Database,
-  event: {
-    id: string;
-    ownerId: string;
-    entityId: string;
-    actorKind: string;
-    eventType: string;
-    requestId: string | null;
-    before: unknown;
-    after: unknown;
-    timestamp: string;
-  },
-): Promise<void> {
-  await db
+export type ActivityEventInput = {
+  id: string;
+  ownerId: string;
+  entityId: string;
+  actorKind: string;
+  eventType: string;
+  requestId: string | null;
+  before: unknown;
+  after: unknown;
+  timestamp: string;
+};
+
+export function appendActivityEventStmt(db: Database, event: ActivityEventInput): PreparedStatement {
+  return db
     .prepare(
       "INSERT INTO activity_events (id, owner_id, entity_id, actor_kind, event_type, request_id, before_json, after_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -144,8 +143,25 @@ export async function appendActivityEvent(
       event.before === undefined ? null : JSON.stringify(event.before),
       event.after === undefined ? null : JSON.stringify(event.after),
       event.timestamp,
-    )
-    .run();
+    );
+}
+
+export async function appendActivityEvent(db: Database, event: ActivityEventInput): Promise<void> {
+  await appendActivityEventStmt(db, event).run();
+}
+
+/**
+ * Astra review (remediation round, 7060176^..1698bc8, P1#3): commands.ts's applyAtomicPlan
+ * previously computed the reported/receipted board revision as `boardRevisionBefore + 1` from an
+ * earlier read, while the actual SQL did a relative `revision = revision + 1` with no guard tying
+ * it to that same read - two concurrent commands for the same owner could both read revision 0,
+ * both compute "1", and both report/receipt "1" while the database actually reached 2. Folding
+ * this fragment into every statement in an atomic plan (bookkeeping AND the domain mutation
+ * itself) makes the whole plan a no-op together if the owner's revision moved since it was read,
+ * so a successful plan's `boardRevisionBefore + 1` is guaranteed correct rather than assumed.
+ */
+export function revisionGuard(ownerId: string, expectedBoardRevision: number): { sql: string; params: unknown[] } {
+  return { sql: "EXISTS (SELECT 1 FROM board_state WHERE owner_id = ? AND revision = ?)", params: [ownerId, expectedBoardRevision] };
 }
 
 export async function findItemRow(db: Database, ownerId: string, id: string): Promise<ItemRow | null> {
@@ -169,17 +185,20 @@ export async function listFocusItems(db: Database, ownerId: string): Promise<Foc
   return result.results;
 }
 
-export function setFocusItemStmt(db: Database, ownerId: string, itemId: string, reviewUntil: string | null, now: string): PreparedStatement {
+export function setFocusItemStmt(db: Database, ownerId: string, itemId: string, reviewUntil: string | null, now: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
   return db
     .prepare(
-      `INSERT INTO focus_items (owner_id, item_id, selected_at, review_until) VALUES (?, ?, ?, ?)
+      `INSERT INTO focus_items (owner_id, item_id, selected_at, review_until)
+       SELECT ?, ?, ?, ? WHERE ${guard.sql}
        ON CONFLICT (owner_id, item_id) DO UPDATE SET review_until = excluded.review_until`,
     )
-    .bind(ownerId, itemId, now, reviewUntil);
+    .bind(ownerId, itemId, now, reviewUntil, ...guard.params);
 }
 
-export function removeFocusItemStmt(db: Database, ownerId: string, itemId: string): PreparedStatement {
-  return db.prepare("DELETE FROM focus_items WHERE owner_id = ? AND item_id = ?").bind(ownerId, itemId);
+export function removeFocusItemStmt(db: Database, ownerId: string, itemId: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
+  return db.prepare(`DELETE FROM focus_items WHERE owner_id = ? AND item_id = ? AND ${guard.sql}`).bind(ownerId, itemId, ...guard.params);
 }
 
 export type PlanningWeekRow = {
@@ -221,13 +240,15 @@ export async function beginClosingPlanningWeek(db: Database, ownerId: string, id
   return result.meta.changes > 0;
 }
 
-/** Finalizes a close: only takes effect while this row still holds the 'closing' lock, so it's
- * safe to include (guarded the same way) in the same atomic batch as the revision bump, activity
- * event, and receipt - see commands.ts's applyAtomicPlan. */
-export function finalizeClosedPlanningWeekStmt(db: Database, ownerId: string, id: string, reportJson: string): PreparedStatement {
+/** Finalizes a close: only takes effect while this row still holds the 'closing' lock AND the
+ * owner's board revision hasn't moved since it was read, so it's safe to include (guarded the
+ * same way) in the same atomic batch as the revision bump, activity event, and receipt - see
+ * commands.ts's applyAtomicPlan. */
+export function finalizeClosedPlanningWeekStmt(db: Database, ownerId: string, id: string, reportJson: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
   return db
-    .prepare("UPDATE planning_weeks SET status = 'closed', report_json = ? WHERE owner_id = ? AND id = ? AND status = 'closing'")
-    .bind(reportJson, ownerId, id);
+    .prepare(`UPDATE planning_weeks SET status = 'closed', report_json = ? WHERE owner_id = ? AND id = ? AND status = 'closing' AND ${guard.sql}`)
+    .bind(reportJson, ownerId, id, ...guard.params);
 }
 
 export type WeekCommitmentRow = {
@@ -255,40 +276,49 @@ export async function listWeekCommitments(db: Database, ownerId: string, weekId:
 }
 
 /**
- * Astra review (Phase 3 Slice 1, c02e352, Blocker B): the commit is database-enforced against a
- * concurrently closing week (the `WHERE EXISTS (... status = 'open')` guard) rather than relying
- * on the caller's own pre-read staying true. Also handles re-adding a previously withdrawn
- * commitment (the roadmap's phase-3 acceptance criteria explicitly require add/withdraw/re-add):
- * the upsert clears any prior withdrawal and refreshes `added_at` to now, since a re-add is a new
- * selection event as far as the weekly-statistics contract's "after commitment selection" rule is
- * concerned (see lib/domain/progress.ts). Returns an unexecuted statement so commands.ts can run
- * it in the same atomic batch as the revision bump/activity event/receipt - see applyAtomicPlan.
+ * Astra review (Phase 3 Slice 1, c02e352, Blocker B; revision guard added in the remediation
+ * round, 7060176^..1698bc8, P1#3): the commit is database-enforced against both a concurrently
+ * closing week AND a concurrently moved board revision (rather than relying on the caller's own
+ * pre-read staying true for either). Also handles re-adding a previously withdrawn commitment
+ * (the roadmap's phase-3 acceptance criteria explicitly require add/withdraw/re-add): the upsert
+ * clears any prior withdrawal and refreshes `added_at` to now for display purposes - on-time
+ * credit no longer depends on this column (see lib/domain/progress.ts's computeWeekStats, which
+ * replays the full week.commit/week.withdraw event history instead). Returns an unexecuted
+ * statement so commands.ts can run it in the same atomic batch as the revision bump/activity
+ * event/receipt - see applyAtomicPlan.
  */
-export function upsertWeekCommitmentStmt(db: Database, ownerId: string, weekId: string, itemId: string, now: string): PreparedStatement {
+export function upsertWeekCommitmentStmt(db: Database, ownerId: string, weekId: string, itemId: string, now: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
   return db
     .prepare(
       `INSERT INTO week_commitments (owner_id, week_id, item_id, added_at)
        SELECT ?, ?, ?, ?
-       WHERE EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')
+       WHERE EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open') AND ${guard.sql}
        ON CONFLICT (owner_id, week_id, item_id) DO UPDATE SET withdrawn_at = NULL, withdrawal_reason = NULL, added_at = excluded.added_at`,
     )
-    .bind(ownerId, weekId, itemId, now, ownerId, weekId);
+    .bind(ownerId, weekId, itemId, now, ownerId, weekId, ...guard.params);
 }
 
-/** Same database-enforced "week must still be open" guard as upsertWeekCommitmentStmt. */
-export function withdrawWeekCommitmentStmt(db: Database, ownerId: string, weekId: string, itemId: string, reason: string | null, now: string): PreparedStatement {
+/** Same database-enforced "week must still be open" + board-revision guard as
+ * upsertWeekCommitmentStmt. `withdrawn_at IS NULL` is part of this statement's own precondition -
+ * see commands.ts's weekWithdrawPlan for why the bookkeeping statements must check the identical
+ * condition (Astra P1#2: they previously only checked the week-open half of it). */
+export function withdrawWeekCommitmentStmt(db: Database, ownerId: string, weekId: string, itemId: string, reason: string | null, now: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
   return db
     .prepare(
       `UPDATE week_commitments SET withdrawn_at = ?, withdrawal_reason = ?
        WHERE owner_id = ? AND week_id = ? AND item_id = ? AND withdrawn_at IS NULL
-       AND EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open')`,
+       AND EXISTS (SELECT 1 FROM planning_weeks WHERE owner_id = ? AND id = ? AND status = 'open') AND ${guard.sql}`,
     )
-    .bind(now, reason, ownerId, weekId, itemId, ownerId, weekId);
+    .bind(now, reason, ownerId, weekId, itemId, ownerId, weekId, ...guard.params);
 }
 
 export type ActivityEventRow = { entity_id: string; event_type: string; timestamp: string };
 
-/** Used by weekClose to reconstruct each committed item's complete/reopen history for computeWeekStats. */
+/** Used by weekClose to reconstruct each committed item's complete/reopen AND commit/withdraw
+ * history for computeWeekStats (pass the relevant eventTypes for each; entity_id is the item ID
+ * for both categories, so one call covers both - see commands.ts's weekClosePlan). */
 export async function listActivityEventsForItems(
   db: Database,
   ownerId: string,

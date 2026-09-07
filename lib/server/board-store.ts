@@ -6,7 +6,7 @@ import type { BoardItem, BoardList, BoardPayload, EditableChanges, EditableList,
 import { LIST_RULES, LIST_SORTS, listMoveChanges } from "@/lib/list-behavior";
 import { ITEM_TYPES, LIST_TYPES } from "@/lib/board-types";
 import { requireOwnerId } from "@/lib/server/identity";
-import { appendActivityEvent } from "@/lib/server/repository";
+import { appendActivityEventStmt, type Database } from "@/lib/server/repository";
 
 export { requireOwnerId };
 
@@ -889,41 +889,57 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
   const entries = Object.entries(normalizedChanges).filter(([key]) => COLUMN_MAP[key]);
   const sets = entries.map(([key]) => `${COLUMN_MAP[key]} = ?`);
   const values = entries.map(([, value]) => typeof value === "boolean" ? (value ? 1 : 0) : nullable(value));
-  await runtime().DB.prepare(
+  const updateStmt = runtime().DB.prepare(
     `UPDATE items SET ${sets.join(", ")}, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?`,
-  ).bind(...values, ownerId, id).run();
+  ).bind(...values, ownerId, id);
 
-  // Astra review (Phase 3 Slice 1, c02e352, Blocker A): lib/server/commands.ts's weekClose
-  // reconstructs each committed item's completion history from activity_events, but this legacy
-  // write path - the one the live app actually uses today, since items.complete/items.reopen
-  // aren't wired into app/api/board/route.ts yet - never wrote one. Any completion/reopen done
-  // through the real app was therefore invisible to weekly reports. Emit the same event
-  // types/shape the new command layer uses (see commands.ts's itemsComplete/itemsReopen) so both
-  // paths feed the same history regardless of which one an owner is currently on.
-  if (normalizedChanges.status === "Done" && before.status !== "Done") {
-    await appendActivityEvent(runtime().DB, {
-      id: `evt_${crypto.randomUUID()}`,
-      ownerId,
-      entityId: id,
-      actorKind: "owner",
-      eventType: "items.complete",
-      requestId: null,
-      before: { status: before.status },
-      after: { status: "Done", completedAt: normalizedChanges.completedAt ?? now },
-      timestamp: typeof normalizedChanges.completedAt === "string" ? normalizedChanges.completedAt : now,
-    });
-  } else if ("status" in normalizedChanges && normalizedChanges.status !== "Done" && before.completedAt) {
-    await appendActivityEvent(runtime().DB, {
-      id: `evt_${crypto.randomUUID()}`,
-      ownerId,
-      entityId: id,
-      actorKind: "owner",
-      eventType: "items.reopen",
-      requestId: null,
-      before: { status: before.status, completedAt: before.completedAt },
-      after: { status: normalizedChanges.status },
-      timestamp: now,
-    });
+  // Astra review (Phase 3 Slice 1, c02e352, Blocker A; made atomic in the remediation round,
+  // 7060176^..1698bc8, P1#1): lib/server/commands.ts's weekClose reconstructs each committed
+  // item's completion history from activity_events, but this legacy write path - the one the
+  // live app actually uses today, since items.complete/items.reopen aren't wired into
+  // app/api/board/route.ts yet - never wrote one. Any completion/reopen done through the real app
+  // was therefore invisible to weekly reports. Emit the same event types/shape the new command
+  // layer uses (see commands.ts's itemsComplete/itemsReopen) so both paths feed the same history.
+  //
+  // The item UPDATE and its event INSERT must land together: the original fix ran them as two
+  // separate calls, so a failure between them left the item Done with no event - and, since the
+  // event-emission condition checks `before.status !== "Done"`, a retry could no longer detect the
+  // transition at all, permanently losing that completion from weekly reports. Both statements now
+  // go through one `db.batch()`.
+  const activityStmt = normalizedChanges.status === "Done" && before.status !== "Done"
+    ? appendActivityEventStmt(runtime().DB, {
+        id: `evt_${crypto.randomUUID()}`,
+        ownerId,
+        entityId: id,
+        actorKind: "owner",
+        eventType: "items.complete",
+        requestId: null,
+        before: { status: before.status },
+        after: { status: "Done", completedAt: normalizedChanges.completedAt ?? now },
+        timestamp: typeof normalizedChanges.completedAt === "string" ? normalizedChanges.completedAt : now,
+      })
+    : "status" in normalizedChanges && normalizedChanges.status !== "Done" && before.completedAt
+    ? appendActivityEventStmt(runtime().DB, {
+        id: `evt_${crypto.randomUUID()}`,
+        ownerId,
+        entityId: id,
+        actorKind: "owner",
+        eventType: "items.reopen",
+        requestId: null,
+        before: { status: before.status, completedAt: before.completedAt },
+        after: { status: normalizedChanges.status },
+        timestamp: now,
+      })
+    : null;
+
+  if (activityStmt) {
+    // repository.ts's Database/PreparedStatement is the minimal structural contract both the
+    // real D1 binding and the test harness satisfy (see repository.ts's file comment) - the real
+    // D1Database type additionally requires `.raw()` on prepared statements, which this narrower
+    // interface doesn't declare, hence the cast.
+    await (runtime().DB as unknown as Database).batch([updateStmt, activityStmt]);
+  } else {
+    await updateStmt.run();
   }
 
   let item = await findItem(ownerId, id);

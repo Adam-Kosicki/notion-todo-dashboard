@@ -107,9 +107,9 @@ test("week.commit/withdraw/close lifecycle works for a legacy_notion owner and f
   assert.deepEqual(recloseResult.result, closeResult.result, "re-closing an already-closed week must return the exact frozen snapshot, never recompute it");
 });
 
-// --- Astra review (Phase 3 Slice 1, c02e352) regression cases ---
+// --- Astra review (Phase 3 Slice 1, first round, c02e352) regression cases ---
 
-test("week.commit supports add -> withdraw -> re-add (roadmap Phase 3 acceptance criteria), refreshing addedAt", async () => {
+test("week.commit supports add -> withdraw -> re-add (roadmap Phase 3 acceptance criteria); added_at refreshes for display, but on-time credit no longer depends on it (see progress.test.mjs)", async () => {
   const { db, ownerId } = await legacyOwnerWithItem();
   await createPlanningWeek(db, ownerId, "zz-week-readd", "2026-09-07", "America/Chicago");
 
@@ -156,6 +156,96 @@ test("Blocker B: week.withdraw is rejected while a week is mid-close", async () 
   const { findWeekCommitment } = await import("@/lib/server/repository");
   const row = await findWeekCommitment(db, ownerId, "zz-week-race-2", "zz-item-1");
   assert.equal(row.withdrawn_at, null, "the commitment must still be active - the withdraw never landed");
+});
+
+// --- Astra review (remediation round, 7060176^..1698bc8) regression cases ---
+
+test("Astra P1#2: a withdrawal racing a concurrent withdrawal of the same item is a CONFLICT, with no stray success receipt or revision bump", async () => {
+  const { db: realDb, ownerId } = await legacyOwnerWithItem();
+  await createPlanningWeek(realDb, ownerId, "zz-week-p1-2", "2026-09-07", "America/Chicago");
+  await applyCommand(realDb, ownerId, envelope("week.commit", { weekId: "zz-week-p1-2", itemId: "zz-item-1" }));
+
+  // Simulate a second, concurrent week.withdraw request committing its own transaction in the
+  // exact gap between THIS request's own pre-read (which still sees the commitment as active)
+  // and its atomic batch actually executing - the race Astra's review found, where the
+  // bookkeeping guard previously checked only "week open" while the primary UPDATE also required
+  // "withdrawn_at IS NULL", so this exact scenario used to store a success receipt for a command
+  // that returned CONFLICT.
+  let racedOnce = false;
+  const racyDb = {
+    prepare: (sql) => realDb.prepare(sql),
+    async batch(statements) {
+      if (!racedOnce) {
+        racedOnce = true;
+        await realDb
+          .prepare("UPDATE week_commitments SET withdrawn_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND week_id = ? AND item_id = ?")
+          .bind(ownerId, "zz-week-p1-2", "zz-item-1")
+          .run();
+      }
+      return realDb.batch(statements);
+    },
+  };
+
+  const { getBoardState, getReceipt } = await import("@/lib/server/repository");
+  const stateBefore = await getBoardState(realDb, ownerId);
+  const requestId = "req_p1_2_race";
+  const result = await applyCommand(racyDb, ownerId, envelope("week.withdraw", { weekId: "zz-week-p1-2", itemId: "zz-item-1" }, requestId));
+  assert.equal(result.ok, false, "the primary UPDATE affects zero rows once the concurrent withdrawal has already landed");
+  assert.equal(result.error.code, "CONFLICT");
+
+  assert.equal(await getReceipt(realDb, ownerId, requestId), null, "no receipt may be stored for a request whose domain mutation never actually applied - a retry with this exact requestId must not replay a false success");
+  const stateAfter = await getBoardState(realDb, ownerId);
+  assert.equal(stateAfter.revision, stateBefore.revision, "no revision bump for a command that didn't actually mutate anything");
+});
+
+test("Astra P1#3: a command whose board revision moved between its own read and its batch reports CONFLICT, never a guessed/incorrect revision", async () => {
+  const { db: realDb, ownerId } = await legacyOwnerWithItem();
+
+  // Simulate a fully independent concurrent command (any action, for any item) committing its
+  // own revision bump in the gap between THIS request's own read and its batch actually
+  // executing. The original design computed `boardRevisionBefore + 1` from that earlier read with
+  // no guard tying the relative `revision = revision + 1` SQL to it - two such commands could both
+  // report/receipt "1" while the database reached 2.
+  let racedOnce = false;
+  const racyDb = {
+    prepare: (sql) => realDb.prepare(sql),
+    async batch(statements) {
+      if (!racedOnce) {
+        racedOnce = true;
+        await realDb.prepare("UPDATE board_state SET revision = revision + 1 WHERE owner_id = ?").bind(ownerId).run();
+      }
+      return realDb.batch(statements);
+    },
+  };
+
+  const requestId = "req_p1_3_race";
+  const result = await applyCommand(racyDb, ownerId, envelope("focus.set", { itemId: "zz-item-1", focused: true }, requestId));
+  assert.equal(result.ok, false, "the board-revision CAS must fail once a concurrent command has already bumped it");
+  assert.equal(result.error.code, "CONFLICT");
+
+  const { getReceipt } = await import("@/lib/server/repository");
+  assert.equal(await getReceipt(realDb, ownerId, requestId), null, "no receipt - and certainly none claiming an incorrect revision - may be stored for a command whose CAS failed");
+  assert.deepEqual(await listFocusItems(realDb, ownerId), [], "the focus mutation itself must not have applied either - it's gated by the same CAS as the bookkeeping");
+});
+
+test("a normal successful sequence of commands still bumps the board revision each time, matching the returned boardRevision", async () => {
+  // Guards against a regression the P1#2 fix's first (buggy) attempt actually introduced: gating
+  // the revision-bump statement on a re-check of the domain guard self-invalidated on SUCCESS
+  // (the primary statement, running just before it, had already mutated the very row that guard
+  // reads), silently skipping the bump while still reporting success.
+  const { db, ownerId } = await legacyOwnerWithItem();
+  const { getBoardState } = await import("@/lib/server/repository");
+  await createPlanningWeek(db, ownerId, "zz-week-revcheck", "2026-09-07", "America/Chicago");
+
+  const committed = await applyCommand(db, ownerId, envelope("week.commit", { weekId: "zz-week-revcheck", itemId: "zz-item-1" }));
+  assert.equal(committed.ok, true);
+  assert.equal(committed.boardRevision, 1);
+  assert.equal((await getBoardState(db, ownerId)).revision, 1, "the revision bump must actually land, not just be reported");
+
+  const withdrawn = await applyCommand(db, ownerId, envelope("week.withdraw", { weekId: "zz-week-revcheck", itemId: "zz-item-1" }));
+  assert.equal(withdrawn.ok, true);
+  assert.equal(withdrawn.boardRevision, 2);
+  assert.equal((await getBoardState(db, ownerId)).revision, 2);
 });
 
 test("Blocker B: a week stuck in 'closing' (crash between beginClosingPlanningWeek and finalize) is resumed and finalized by the next week.close call, not stuck forever", async () => {
