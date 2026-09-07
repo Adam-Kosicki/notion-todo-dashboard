@@ -33,7 +33,6 @@ import {
   Ungroup,
   Unplug,
   WalletCards,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -182,16 +181,6 @@ function heatColor(item: BoardItem) {
   return `hsl(${hue} 72% 54%)`;
 }
 
-function tagColor(name: string) {
-  let hash = 0;
-  for (let index = 0; index < name.length; index += 1) hash = (hash * 31 + name.charCodeAt(index)) % 360;
-  return `hsl(${hash} 62% 52%)`;
-}
-
-function tagList(value: string | null) {
-  return (value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
-}
-
 type GroupedItem = BoardItem & { groupMembers?: BoardItem[] };
 
 // Groups collapse into one synthetic row for display: the anchor member's fields (title,
@@ -332,49 +321,9 @@ function DateQuickPopover({ item, onSave }: {
   );
 }
 
-function TagPicker({ value, allTags, onChange }: {
-  value: string | null;
-  allTags: string[];
-  onChange: (next: string | null) => void;
-}) {
-  const [draft, setDraft] = useState("");
-  const selected = tagList(value);
-  const selectedSet = new Set(selected);
-  const commit = (next: string[]) => onChange(next.length ? next.join(", ") : null);
-  const toggle = (tag: string) => commit(selectedSet.has(tag) ? selected.filter((entry) => entry !== tag) : [...selected, tag]);
-  const addDraft = () => {
-    const tag = draft.trim();
-    if (!tag) return;
-    if (!selectedSet.has(tag)) commit([...selected, tag]);
-    setDraft("");
-  };
-  const available = allTags.filter((tag) => !selectedSet.has(tag));
-  return (
-    <div className="tag-picker" onClick={(event) => event.stopPropagation()}>
-      <div className="tag-blobs">
-        {selected.map((tag) => (
-          <button key={tag} type="button" className="tag-blob selected" style={{ "--tag-color": tagColor(tag) } as CSSProperties} onClick={() => toggle(tag)}>
-            {tag}<X />
-          </button>
-        ))}
-        {available.map((tag) => (
-          <button key={tag} type="button" className="tag-blob" style={{ "--tag-color": tagColor(tag) } as CSSProperties} onClick={() => toggle(tag)}>
-            {tag}
-          </button>
-        ))}
-      </div>
-      <div className="tag-add-row">
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="New tag..." onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addDraft(); } }} />
-        <button type="button" onClick={addDraft} disabled={!draft.trim()}>Add</button>
-      </div>
-    </div>
-  );
-}
-
-function QuickEditor({ item, collections, allTags, onSave }: {
+function QuickEditor({ item, collections, onSave }: {
   item: BoardItem;
   collections: string[];
-  allTags: string[];
   onSave: (id: string, changes: EditableChanges) => void;
 }) {
   const commitText = (key: "title" | "originalNotes" | "collection", value: string) => {
@@ -396,17 +345,15 @@ function QuickEditor({ item, collections, allTags, onSave }: {
           <label className="quick-field"><span>Repeat</span><select value={item.recurrence || ""} onChange={(event) => onSave(item.id, { recurrence: event.currentTarget.value || null })}><option value="">Does not repeat</option>{RECURRENCES.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
           <label className="quick-field"><span>Time</span><input type="time" value={item.reminderTime || ""} onChange={(event) => onSave(item.id, { reminderTime: event.currentTarget.value || null })} /></label>
         </>}
-        <label className="quick-field quick-tags-field"><span>Tags</span><TagPicker allTags={allTags} value={item.tags} onChange={(next) => onSave(item.id, { tags: next })} /></label>
         {usesPriority(item.itemType) && <div className="quick-priority"><PriorityControl item={item} key={`${item.id}:${item.priority ?? "unrated"}:quick`} onChange={(priority) => onSave(item.id, { priority })} /></div>}
       </div>
     </div>
   );
 }
 
-function TaskRow({ item, collections, allTags, completed = false, showPriority = true, groupMemberOf, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup }: {
+function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
   item: GroupedItem;
   collections: string[];
-  allTags: string[];
   completed?: boolean;
   showPriority?: boolean;
   groupMemberOf?: string;
@@ -415,9 +362,11 @@ function TaskRow({ item, collections, allTags, completed = false, showPriority =
   onMergeInto?: (draggedId: string, targetId: string) => void;
   onUnlinkItem?: (id: string) => void;
   onDisbandGroup?: (anchorId: string) => void;
+  onDelete?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const done = ["Done", "Archived"].includes(item.status);
   const date = completed ? dueLabel(item.completedAt) : dueLabel(item.due || item.scheduledFor);
   const attention = Math.round(effectiveAttention(item));
@@ -454,9 +403,7 @@ function TaskRow({ item, collections, allTags, completed = false, showPriority =
         <GripVertical className="dashboard-drag" aria-hidden="true" />
         <button className="dashboard-title" onClick={() => isGroup ? setExpanded((open) => !open) : onOpen(item)} type="button">
           <strong>{item.title}{isGroup && <em className="group-badge"><ChevronRight className={expanded ? "group-chevron open" : "group-chevron"} />{members!.length} tasks</em>}</strong>
-          <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}{item.showInTodoist && <em className="todoist-mark">T</em>}
-            {tagList(item.tags).map((tag) => <em key={tag} className="tag-pill" style={{ "--tag-color": tagColor(tag) } as CSSProperties}>{tag}</em>)}
-          </span>
+          <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}{item.showInTodoist && <em className="todoist-mark">T</em>}</span>
         </button>
         <span className={date?.includes("overdue") ? "dashboard-due overdue" : "dashboard-due"}>{date || "—"}</span>
         <span className="heat-score" title={`Combined urgency ${Math.round(attentionHeat(item))}`}><i />{attention}</span>
@@ -484,13 +431,21 @@ function TaskRow({ item, collections, allTags, completed = false, showPriority =
           <button type="button" onClick={() => onDisbandGroup(item.id)}><Ungroup />Disband</button>
         ) : null}
         <button type="button" className="archive-action" onClick={() => onSave(item.id, { status: "Archived" })}><Archive />Archive</button>
+        {onDelete && (confirmDelete ? (
+          <span className="delete-confirm-inline">
+            <span>Delete for good?</span>
+            <button type="button" className="danger" onClick={() => onDelete(item.id)}>Delete</button>
+            <button type="button" onClick={() => setConfirmDelete(false)}>Cancel</button>
+          </span>
+        ) : (
+          <button type="button" className="delete-action" onClick={() => setConfirmDelete(true)}><Trash2 />Delete</button>
+        ))}
       </div>
-      {!isGroup && <QuickEditor item={item} collections={collections} allTags={allTags} onSave={onSave} />}
+      {!isGroup && <QuickEditor item={item} collections={collections} onSave={onSave} />}
       {isGroup && expanded && (
         <div className="group-members">
           {members!.map((member) => (
             <TaskRow
-              allTags={allTags}
               collections={collections}
               completed={completed}
               groupMemberOf={item.id}
@@ -500,6 +455,7 @@ function TaskRow({ item, collections, allTags, completed = false, showPriority =
               onOpen={onOpen}
               onSave={onSave}
               onUnlinkItem={onUnlinkItem}
+              onDelete={onDelete}
             />
           ))}
         </div>
@@ -508,14 +464,13 @@ function TaskRow({ item, collections, allTags, completed = false, showPriority =
   );
 }
 
-function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup }: {
+function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
   title: string;
   note: string;
   items: GroupedItem[];
   icon: typeof Flame;
   empty: string;
   collections: string[];
-  allTags: string[];
   completed?: boolean;
   onOpen: (item: BoardItem) => void;
   onSave: (id: string, changes: EditableChanges) => void;
@@ -523,13 +478,14 @@ function TaskTable({ title, note, items, icon: Icon, empty, collections, allTags
   onMergeInto?: (draggedId: string, targetId: string) => void;
   onUnlinkItem?: (id: string) => void;
   onDisbandGroup?: (anchorId: string) => void;
+  onDelete?: (id: string) => void;
 }) {
   return (
     <section className="task-table-panel" onDragOver={(event) => { if (onDrop) event.preventDefault(); }} onDrop={(event) => { if (!onDrop) return; event.preventDefault(); const id = event.dataTransfer.getData("text/plain"); if (id) onDrop(id); }}>
       <header className="task-table-head"><span className="task-table-icon"><Icon /></span><span><h2>{title}</h2><p>{note}</p></span><span className="task-table-count">{items.length}</span></header>
       <div className="task-table-columns" aria-hidden="true"><span>Task</span><span>{completed ? "Finished" : "Due"}</span><span>Attention</span><span>Priority</span><span /></div>
       <div className="task-table-body">
-        {items.map((item) => <TaskRow allTags={allTags} completed={completed} item={item} collections={collections} key={item.id} onDisbandGroup={onDisbandGroup} onMergeInto={onMergeInto} onOpen={onOpen} onSave={onSave} onUnlinkItem={onUnlinkItem} />)}
+        {items.map((item) => <TaskRow completed={completed} item={item} collections={collections} key={item.id} onDisbandGroup={onDisbandGroup} onMergeInto={onMergeInto} onOpen={onOpen} onSave={onSave} onUnlinkItem={onUnlinkItem} onDelete={onDelete} />)}
         {!items.length && <div className="task-table-empty"><Check /><span>{empty}</span></div>}
       </div>
     </section>
@@ -653,13 +609,12 @@ function NewListCard({ onCreate }: { onCreate: (name: string, type: string) => v
 const LIST_DRAG_TYPE = "application/x-burner-list-id";
 
 function CollectionsView({
-  items, allItems, lists, allTags, onOpen, onSaveItem, onCreateList, onSaveList,
-  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup,
+  items, allItems, lists, onOpen, onSaveItem, onCreateList, onSaveList,
+  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem,
 }: {
   items: BoardItem[];
   allItems: BoardItem[];
   lists: BoardList[];
-  allTags: string[];
   onOpen: (item: BoardItem) => void;
   onSaveItem: (id: string, changes: EditableChanges) => void;
   onCreateList: (name: string, type: string) => void;
@@ -669,6 +624,7 @@ function CollectionsView({
   onMergeInto: (draggedId: string, targetId: string) => void;
   onUnlinkItem: (id: string) => void;
   onDisbandGroup: (id: string) => void;
+  onDeleteItem: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -746,9 +702,9 @@ function CollectionsView({
             <span>{LIST_SORTS.find(sort => sort.value === (list.itemSort || "priority"))?.label}</span>
           </div>
           <div className="collection-table">
-            {rows.map(item => <TaskRow key={item.id} item={item} collections={names} allTags={allTags}
+            {rows.map(item => <TaskRow key={item.id} item={item} collections={names}
               showPriority={showPriority} onOpen={onOpen} onSave={onSaveItem}
-              onMergeInto={onMergeInto} onUnlinkItem={onUnlinkItem} onDisbandGroup={onDisbandGroup} />)}
+              onMergeInto={onMergeInto} onUnlinkItem={onUnlinkItem} onDisbandGroup={onDisbandGroup} onDelete={onDeleteItem} />)}
             {!rows.length && <div className="subtable-empty">Drop a task here or choose this list from a task’s Move to list menu.</div>}
           </div>
         </>}
@@ -1320,6 +1276,21 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     }
   };
 
+  const deleteItem = async (id: string) => {
+    if (!data) return;
+    if (demo) { setData(current => current ? { ...current, items: current.items.filter(item => item.id !== id) } : current); return; }
+    const previous = data.items;
+    setData(current => current ? { ...current, items: current.items.filter(item => item.id !== id) } : current);
+    try {
+      const result = await boardRequest({ action: "delete_item", id });
+      if (result.items) applyItemUpdates(result.items);
+      toast.success("Task deleted.");
+    } catch (deleteError) {
+      setData(current => current ? { ...current, items: previous } : current);
+      toast.error(deleteError instanceof Error ? deleteError.message : "The task could not be deleted.");
+    }
+  };
+
   const applyItemUpdates = (updated: BoardItem[]) => {
     setData((current) => current ? {
       ...current,
@@ -1382,7 +1353,6 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   );
 
   const sources = [...new Set(data.items.map((item) => item.source).filter(Boolean) as string[])].sort();
-  const allTags = [...new Set(data.items.flatMap((item) => tagList(item.tags)))].sort((a, b) => a.localeCompare(b));
 
   return (
     <main className="app-shell">
@@ -1467,13 +1437,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           {!data.lists.some(list => list.rule === "inbox") && filtered.some(item => !item.collection) && (
             <TaskTable title="Unfiled tasks" note="These tasks have no list. Move them into a list, or set any list’s Tasks shown setting to Unfiled tasks."
               items={filtered.filter(item => !item.collection)} icon={Inbox} empty="No unfiled tasks"
-              collections={data.collections} allTags={allTags} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} />
+              collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} />
           )}
           <CollectionsView
             items={filtered}
             allItems={data.items}
             lists={data.lists}
-            allTags={allTags}
             onCreateList={(name, type) => void createList(name, type)}
             onDeleteList={(id) => void deleteList(id)}
             onReorderLists={(orderedIds, pin) => void reorderLists(orderedIds, pin)}
@@ -1483,13 +1452,13 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onMergeInto={(draggedId, targetId) => void mergeItems(draggedId, targetId)}
             onUnlinkItem={(id) => void unlinkItem(id)}
             onDisbandGroup={(id) => void disbandGroup(id)}
+            onDeleteItem={(id) => void deleteItem(id)}
           />
         </section>
       ) : mode === "reminders" ? (
         <section className="dashboard-wrap single-table-wrap">
           <div className="reminder-note"><BellRing /><span><strong>Reminder schedule</strong><small>Dates, times, and repeat rules are saved now. Apple Reminders or Google Calendar can handle notifications when that connection is added.</small></span></div>
           <TaskTable
-            allTags={allTags}
             collections={data.collections}
             empty="No recurring reminders yet"
             icon={BellRing}
@@ -1498,6 +1467,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onDrop={(id) => void saveItem(id, { itemType: "Reminder", priority: 0 })}
             onOpen={(item) => setSelectedId(item.id)}
             onSave={(id, changes) => void saveItem(id, changes)}
+            onDelete={(id) => void deleteItem(id)}
             title="Reminders"
           />
         </section>
@@ -1510,7 +1480,6 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           </div>
           <div className="productivity-grid">
             <TaskTable
-              allTags={allTags}
               collections={data.collections}
               completed
               empty="Finished tasks will appear here"
@@ -1519,10 +1488,10 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               note="Your productivity history"
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
+              onDelete={(id) => void deleteItem(id)}
               title="Finished"
             />
             <TaskTable
-              allTags={allTags}
               collections={data.collections}
               empty="Nothing archived"
               icon={Archive}
@@ -1530,6 +1499,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
               note="Removed from active views, but still recoverable"
               onOpen={(item) => setSelectedId(item.id)}
               onSave={(id, changes) => void saveItem(id, changes)}
+              onDelete={(id) => void deleteItem(id)}
               title="Archived"
             />
           </div>

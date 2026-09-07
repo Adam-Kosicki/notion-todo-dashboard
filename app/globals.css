@@ -622,6 +622,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 .quick-toolbar button:hover, .quick-toolbar button.selected { border-color: color-mix(in srgb, var(--heat-color) 58%, #303b48); color: #fff; }
 .quick-toolbar button svg { width: 14px; }
 .quick-toolbar .archive-action:hover { border-color: rgba(255, 92, 92, 0.5); color: #ff8d86; }
+.quick-toolbar .delete-action:hover { border-color: rgba(255, 92, 92, 0.7); color: #ff5c5c; background: rgba(255, 92, 92, 0.1); }
+.delete-confirm-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #ff8d86;
+}
+.delete-confirm-inline button {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid #303b48;
+  border-radius: 8px;
+  background: #19222d;
+  color: #aeb8c2;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.delete-confirm-inline button.danger { border-color: rgba(255, 92, 92, 0.6); color: #ff5c5c; }
 .quick-toolbar button.has-date { color: color-mix(in srgb, var(--heat-color) 60%, #aeb8c2); border-color: color-mix(in srgb, var(--heat-color) 40%, #303b48); }
 .date-quick-popover { display: flex; width: auto; flex-direction: column; padding: 8px; gap: 6px; }
 .date-quick-popover .date-clear {
@@ -679,60 +699,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 .quick-field input:focus, .quick-field select:focus { border-color: color-mix(in srgb, var(--heat-color) 70%, #303c49); }
 .quick-title-field { grid-column: span 2; }
 .quick-details-field { grid-column: span 2; }
-.quick-tags-field { grid-column: 1 / -1; }
 .quick-priority { grid-column: 1 / -1; }
 .quick-priority .priority-control { padding: 9px 11px; }
-.tag-picker { display: flex; flex-direction: column; gap: 7px; }
-.tag-blobs { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag-blob {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 9px;
-  border: 1px solid color-mix(in srgb, var(--tag-color) 45%, #303b48);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--tag-color) 14%, transparent);
-  color: color-mix(in srgb, var(--tag-color) 70%, #e8e9e7);
-  font-size: 11px;
-  font-weight: 700;
-  gap: 4px;
-  cursor: pointer;
-}
-.tag-blob.selected { background: color-mix(in srgb, var(--tag-color) 32%, transparent); color: #fff; }
-.tag-blob svg { width: 11px; }
-.tag-add-row { display: flex; gap: 6px; }
-.tag-add-row input {
-  height: 32px;
-  min-width: 0;
-  flex: 1;
-  padding: 0 9px;
-  border: 1px solid #303c49;
-  border-radius: 8px;
-  background: #19232e;
-  color: #e8e9e7;
-  font-size: 12px;
-}
-.tag-add-row button {
-  padding: 0 12px;
-  border: 1px solid #303b48;
-  border-radius: 8px;
-  background: #19232e;
-  color: #aeb8c2;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.tag-add-row button:disabled { opacity: 0.5; cursor: default; }
-.tag-pill {
-  display: inline-flex;
-  padding: 1px 7px;
-  border: 1px solid color-mix(in srgb, var(--tag-color) 45%, #303b48);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--tag-color) 16%, transparent);
-  color: color-mix(in srgb, var(--tag-color) 75%, #e8e9e7);
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 700;
-}
 .task-table-empty {
   display: flex;
   min-height: 126px;

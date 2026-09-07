@@ -929,6 +929,42 @@ export async function updateBoardItem(ownerId: string, id: string, changes: Edit
   };
 }
 
+export async function deleteItem(ownerId: string, id: string) {
+  const db = runtime().DB;
+  const item = await findItem(ownerId, id);
+  const affected: BoardItem[] = [];
+  if (item.groupId === item.id) {
+    // Deleting the anchor promotes the next member so the rest of the group survives.
+    const members = await db.prepare("SELECT id FROM items WHERE owner_id = ? AND group_id = ? AND id != ?")
+      .bind(ownerId, item.id, id).all();
+    const memberIds = (members.results || []).map((row: any) => row.id as string);
+    if (memberIds.length === 1) {
+      await db.prepare("UPDATE items SET group_id = NULL, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?")
+        .bind(ownerId, memberIds[0]).run();
+      affected.push(await findItem(ownerId, memberIds[0]));
+    } else if (memberIds.length > 1) {
+      const [newAnchor, ...rest] = memberIds;
+      await db.batch([
+        db.prepare("UPDATE items SET group_id = ?, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?").bind(newAnchor, ownerId, newAnchor),
+        ...rest.map((memberId) => db.prepare("UPDATE items SET group_id = ?, dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?").bind(newAnchor, ownerId, memberId)),
+      ]);
+      for (const memberId of memberIds) affected.push(await findItem(ownerId, memberId));
+    }
+  } else if (item.groupId) {
+    const result = await unlinkFromGroup(ownerId, id);
+    affected.push(...result.items.filter((entry) => entry.id !== id));
+  }
+  // Best-effort: trash the Notion page and drop the Todoist task, same as archiving.
+  // A sync failure here should never block the local delete the user asked for.
+  try {
+    await updateItem(ownerId, id, { status: "Archived" });
+  } catch {
+    // Ignore - the row is deleted next regardless of remote sync outcome.
+  }
+  await db.prepare("DELETE FROM items WHERE owner_id = ? AND id = ?").bind(ownerId, id).run();
+  return { deleted: true, items: affected };
+}
+
 export async function updateItem(ownerId: string, id: string, changes: EditableChanges) {
   const before = await findItem(ownerId, id);
   const now = new Date().toISOString();

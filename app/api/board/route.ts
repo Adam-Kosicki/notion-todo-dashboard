@@ -2,6 +2,7 @@ import {
   connectProvider,
   createItem,
   createList,
+  deleteItem,
   deleteList,
   disbandGroup,
   disconnectProvider,
@@ -59,6 +60,9 @@ export async function POST(request: Request) {
     }
     if (body.action === "update" && body.id && body.changes) {
       return Response.json(await updateBoardItem(ownerId, body.id, body.changes));
+    }
+    if (body.action === "delete_item" && body.id) {
+      return Response.json(await deleteItem(ownerId, body.id));
     }
     if (body.action === "list_create") {
       return Response.json({ list: await createList(ownerId, { name: body.name || "", type: body.type }) }, { status: 201 });
