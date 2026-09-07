@@ -45,7 +45,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
-import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type RelationOption } from "@/lib/board-types";
+import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type HomeVisibility, type RelationOption } from "@/lib/board-types";
 
 import OrganizeMode from "./organize-mode";
 import "./organize.css";
@@ -53,7 +53,7 @@ import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
 import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, plannedDate, reorderedListIds } from "@/lib/list-behavior";
 
-type BoardMode = "home" | "organize" | "calendar" | "reminders" | "completed";
+type BoardMode = "home" | "organize" | "calendar" | "goals" | "reminders" | "completed";
 
 const STATUSES = ["Not started", "In progress", "Done", "Archived"];
 const ENERGIES = ["High focus", "Medium", "Low / admin"];
@@ -493,9 +493,11 @@ function TaskTable({ title, note, items, icon: Icon, empty, collections, complet
   );
 }
 
-function ListManagePopover({ list, itemCount, onSave, onDelete, onMoveUp, onMoveDown }: {
+function ListManagePopover({ list, itemCount, hiddenCounts, visibility, onSave, onDelete, onMoveUp, onMoveDown }: {
   list: BoardList;
   itemCount: number;
+  hiddenCounts: { goals: number; purchases: number };
+  visibility: HomeVisibility;
   onSave: (id: string, changes: EditableList) => void;
   onDelete: (id: string) => void;
   onMoveUp?: () => void;
@@ -505,6 +507,8 @@ function ListManagePopover({ list, itemCount, onSave, onDelete, onMoveUp, onMove
   const [confirmDelete, setConfirmDelete] = useState(false);
   const typeDefaults = listTypeDefaults(list.type);
   const priorityMode = list.showPriority === null ? "default" : list.showPriority ? "on" : "off";
+  const goalsMode = list.showLongTermGoals === null || list.showLongTermGoals === undefined ? "default" : list.showLongTermGoals ? "on" : "off";
+  const purchasesMode = list.showPurchases === null || list.showPurchases === undefined ? "default" : list.showPurchases ? "on" : "off";
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setConfirmDelete(false); }}>
       <PopoverTrigger asChild>
@@ -550,6 +554,22 @@ function ListManagePopover({ list, itemCount, onSave, onDelete, onMoveUp, onMove
             <button type="button" className={priorityMode === "default" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: null })}>Default ({typeDefaults.showPriority ? "on" : "off"})</button>
             <button type="button" className={priorityMode === "on" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: true })}>On</button>
             <button type="button" className={priorityMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showPriority: false })}>Off</button>
+          </div>
+        </div>
+        <div className="list-toggle-row">
+          <span>Long-term goals in this list{hiddenCounts.goals > 0 && <em className="hidden-count"> · {hiddenCounts.goals} hidden</em>}</span>
+          <div className="tri-toggle">
+            <button type="button" className={goalsMode === "default" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: null })}>Default ({(typeDefaults.showLongTermGoals && visibility.goals) ? "on" : "off"})</button>
+            <button type="button" className={goalsMode === "on" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: true })}>On</button>
+            <button type="button" className={goalsMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showLongTermGoals: false })}>Off</button>
+          </div>
+        </div>
+        <div className="list-toggle-row">
+          <span>Purchases in this list{hiddenCounts.purchases > 0 && <em className="hidden-count"> · {hiddenCounts.purchases} hidden</em>}</span>
+          <div className="tri-toggle">
+            <button type="button" className={purchasesMode === "default" ? "selected" : ""} onClick={() => onSave(list.id, { showPurchases: null })}>Default ({visibility.purchases ? "on" : "off"})</button>
+            <button type="button" className={purchasesMode === "on" ? "selected" : ""} onClick={() => onSave(list.id, { showPurchases: true })}>On</button>
+            <button type="button" className={purchasesMode === "off" ? "selected" : ""} onClick={() => onSave(list.id, { showPurchases: false })}>Off</button>
           </div>
         </div>
         {typeDefaults.hasReminderDefault && (
@@ -662,12 +682,13 @@ function UpcomingWidget({ items, position, onOpen, onMove }: {
 const LIST_DRAG_TYPE = "application/x-burner-list-id";
 
 function CollectionsView({
-  items, allItems, lists, onOpen, onSaveItem, onCreateList, onSaveList,
-  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem,
+  items, allItems, lists, visibility, onOpen, onSaveItem, onCreateList, onSaveList,
+  onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem, onSaveVisibility,
 }: {
   items: BoardItem[];
   allItems: BoardItem[];
   lists: BoardList[];
+  visibility: HomeVisibility;
   onOpen: (item: BoardItem) => void;
   onSaveItem: (id: string, changes: EditableChanges) => void;
   onCreateList: (name: string, type: string) => void;
@@ -678,6 +699,7 @@ function CollectionsView({
   onUnlinkItem: (id: string) => void;
   onDisbandGroup: (id: string) => void;
   onDeleteItem: (id: string) => void;
+  onSaveVisibility: (changes: Partial<HomeVisibility>) => void;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -689,14 +711,20 @@ function CollectionsView({
     onReorderLists(reorderedListIds(lists, draggedId, target.id), { id: dragged.id, pinned: Boolean(target.pinned) });
   };
   const renderList = (list: BoardList, siblings: BoardList[]) => {
-    const matches = items.filter(item => belongsToList(item, list, lists));
+    const matchesAll = items.filter(item => belongsToList(item, list, lists));
+    const typeDefaults = listTypeDefaults(list.type);
+    const showGoals = list.showLongTermGoals ?? (typeDefaults.showLongTermGoals && visibility.goals);
+    const showPurchases = list.showPurchases ?? visibility.purchases;
+    const hiddenGoals = showGoals ? 0 : matchesAll.filter(item => item.itemType === "Goal").length;
+    const hiddenPurchases = showPurchases ? 0 : matchesAll.filter(item => item.itemType === "Purchase").length;
+    const matches = matchesAll.filter(item => (showGoals || item.itemType !== "Goal") && (showPurchases || item.itemType !== "Purchase"));
     const rows = collapseGroups(matches).sort((a, b) => compareListItems(a, b, list.itemSort, effectiveAttention));
     const assignedCount = allItems.filter(item => item.collection === list.name).length;
     const openCount = matches.filter(item => !["Done", "Archived"].includes(item.status)).length;
     const isExpanded = expanded[list.id] ?? Boolean(list.pinned);
     const Icon = list.rule === "inbox" ? Inbox : collectionIcon(list.name);
     const index = siblings.findIndex(entry => entry.id === list.id);
-    const showPriority = list.showPriority ?? listTypeDefaults(list.type).showPriority;
+    const showPriority = list.showPriority ?? typeDefaults.showPriority;
     return (
       <section
         key={list.id}
@@ -739,13 +767,18 @@ function CollectionsView({
           <button className="collection-head-toggle" type="button" aria-expanded={isExpanded}
             onClick={() => setExpanded(current => ({ ...current, [list.id]: !isExpanded }))}>
             <span className="collection-icon"><Icon /></span>
-            <span><h2>{list.name}</h2><p>{openCount} open · {matches.length} shown</p></span>
+            <span><h2>{list.name}</h2><p>{openCount} open · {matches.length} shown
+              {(hiddenGoals > 0 || hiddenPurchases > 0) && <em className="hidden-count">
+                {hiddenGoals > 0 && ` · ${hiddenGoals} goal${hiddenGoals === 1 ? "" : "s"} hidden`}
+                {hiddenPurchases > 0 && ` · ${hiddenPurchases} purchase${hiddenPurchases === 1 ? "" : "s"} hidden`}
+              </em>}
+            </p></span>
             <ChevronRight className={isExpanded ? "collection-chevron open" : "collection-chevron"} />
           </button>
           <button className={"list-pin " + (list.pinned ? "is-pinned" : "")} type="button"
             aria-label={(list.pinned ? "Unpin " : "Pin ") + list.name} aria-pressed={Boolean(list.pinned)}
             onClick={() => onSaveList(list.id, { pinned: !list.pinned })}><Pin /></button>
-          <ListManagePopover list={list} itemCount={assignedCount} onSave={onSaveList} onDelete={onDeleteList}
+          <ListManagePopover list={list} itemCount={assignedCount} hiddenCounts={{ goals: hiddenGoals, purchases: hiddenPurchases }} visibility={visibility} onSave={onSaveList} onDelete={onDeleteList}
             onMoveUp={index > 0 ? () => moveList(list.id, siblings[index - 1]) : undefined}
             onMoveDown={index < siblings.length - 1 ? () => moveList(list.id, siblings[index + 1]) : undefined} />
         </header>
@@ -766,7 +799,13 @@ function CollectionsView({
   };
   return (
     <div className="home-lists">
-      <header className="lists-section-head"><ListChecks /><h2>Lists</h2><small>Pinned lists stay open at the top. Drag tasks between lists, and hold Shift while dropping on a task to group them.</small></header>
+      <header className="lists-section-head">
+        <ListChecks /><h2>Lists</h2><small>Pinned lists stay open at the top. Drag tasks between lists, and hold Shift while dropping on a task to group them.</small>
+        <div className="visibility-toggle-row">
+          <label><input type="checkbox" checked={visibility.goals} onChange={(event) => onSaveVisibility({ goals: event.currentTarget.checked })} />Show long-term goals in lists</label>
+          <label><input type="checkbox" checked={visibility.purchases} onChange={(event) => onSaveVisibility({ purchases: event.currentTarget.checked })} />Show purchases in lists</label>
+        </div>
+      </header>
       <div className="collections-grid">
         <NewListCard onCreate={onCreateList} />
         {ordered.map(list => renderList(list, ordered))}
@@ -1142,6 +1181,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const captureRef = useRef<HTMLInputElement>(null);
   const captureLock = useRef(false);
   const [eventCapture, setEventCapture] = useState("");
+  const [goalCapture, setGoalCapture] = useState("");
   const [widgetTop, setWidgetTopState] = useState(true);
   useEffect(() => {
     try { setWidgetTopState(localStorage.getItem("burner-upcoming-position") !== "bottom"); } catch { /* per-viewer only */ }
@@ -1282,6 +1322,20 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     }
   };
 
+  const createGoal = async () => {
+    const title = goalCapture.trim();
+    if (!title || !data) return;
+    try {
+      const result = demo ? { item: { ...sampleBoard().items[0], id: crypto.randomUUID(), title, collection: null, priority: null, itemType: "Goal" } } : await boardRequest({ action: "create", title });
+      setData(current => current ? { ...current, items: [result.item, ...current.items] } : current);
+      setGoalCapture("");
+      if (!demo) await saveItem(result.item.id, { itemType: "Goal" });
+      toast.success("Goal added.", { action: { label: "Edit details", onClick: () => setSelectedId(result.item.id) } });
+    } catch (captureError) {
+      toast.error(captureError instanceof Error ? captureError.message : "Could not add that goal.");
+    }
+  };
+
   const createList = async (name: string, type: string) => {
     if (!data) return;
     if (demo) { setData(current => current ? { ...current, lists: [...current.lists, { id: crypto.randomUUID(), name, type: type as BoardList["type"], showPriority: null, showLongTermGoals: null, reminderDefault: null, defaultItemType: null, sortOrder: current.lists.length }], collections: [...current.collections, name] } : current); return; }
@@ -1310,6 +1364,20 @@ export default function BoardApp({ displayName }: { displayName: string }) {
       } : current);
     } catch (saveError) {
       toast.error(saveError instanceof Error ? saveError.message : "The list did not save.");
+    }
+  };
+
+  const saveVisibility = async (changes: Partial<HomeVisibility>) => {
+    if (!data) return;
+    const previous = data.visibility;
+    setData((current) => current ? { ...current, visibility: { ...current.visibility, ...changes } } : current);
+    if (demo) return;
+    try {
+      const result = await boardRequest({ action: "set_visibility", visibility: changes });
+      setData((current) => current ? { ...current, visibility: result.visibility } : current);
+    } catch (visibilityError) {
+      setData((current) => current ? { ...current, visibility: previous } : current);
+      toast.error(visibilityError instanceof Error ? visibilityError.message : "The setting did not save.");
     }
   };
 
@@ -1470,6 +1538,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             <TabsTrigger value="home"><CalendarClock />Home</TabsTrigger>
             <TabsTrigger value="organize"><ListChecks />Organize</TabsTrigger>
             <TabsTrigger value="calendar"><CalendarDays />Calendar</TabsTrigger>
+            <TabsTrigger value="goals"><Target />Goals</TabsTrigger>
             <TabsTrigger value="reminders"><BellRing />Reminders</TabsTrigger>
             <TabsTrigger value="completed"><Trophy />Finished</TabsTrigger>
           </TabsList>
@@ -1480,6 +1549,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             ? "A focused pass through your tasks. Save, skip, or undo."
             : mode === "calendar"
             ? "Recurring events and things you want to track on a calendar. They stay out of your lists."
+            : mode === "goals"
+            ? "Every long-term goal, in one place, regardless of any list's visibility setting."
             : mode === "reminders"
             ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
             : "Completed tasks count toward your productivity history. Archived items stay recoverable."}</p>
@@ -1523,6 +1594,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             items={filtered.filter(item => item.itemType !== "Event")}
             allItems={data.items}
             lists={data.lists}
+            visibility={data.visibility}
+            onSaveVisibility={(changes) => void saveVisibility(changes)}
             onCreateList={(name, type) => void createList(name, type)}
             onDeleteList={(id) => void deleteList(id)}
             onReorderLists={(orderedIds, pin) => void reorderLists(orderedIds, pin)}
@@ -1553,6 +1626,25 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onSave={(id, changes) => void saveItem(id, changes)}
             onDelete={(id) => void deleteItem(id)}
             title="Events"
+          />
+        </section>
+      ) : mode === "goals" ? (
+        <section className="dashboard-wrap single-table-wrap">
+          <div className="capture-box goal-capture">
+            <Target />
+            <input value={goalCapture} onChange={(event) => setGoalCapture(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) void createGoal(); }} placeholder="Add a long-term goal..." aria-label="Add goal" />
+            <button type="button" onClick={() => void createGoal()} disabled={!goalCapture.trim()}>Add</button>
+          </div>
+          <TaskTable
+            collections={data.collections}
+            empty="No goals yet. Add one above, or set a task's type to Goal."
+            icon={Target}
+            items={filtered.filter(item => item.itemType === "Goal").sort((a, b) => compareListItems(a, b, "priority", effectiveAttention))}
+            note="Shown here no matter which lists hide goals."
+            onOpen={(item) => setSelectedId(item.id)}
+            onSave={(id, changes) => void saveItem(id, changes)}
+            onDelete={(id) => void deleteItem(id)}
+            title="Goals"
           />
         </section>
       ) : mode === "reminders" ? (

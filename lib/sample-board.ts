@@ -35,6 +35,8 @@ export function sampleBoard(): BoardPayload {
     ].map((list, index) => ({ ...list, rule: (list.rule || "manual") as ListRule, type: list.type as BoardPayload["lists"][number]["type"], id: `sample-list-${index}`, showPriority: null, showLongTermGoals: null, reminderDefault: null, sortOrder: index })),
     connections: { notion: false, notionManaged: false, todoist: false },
     relations: { areas: [], projects: [], goals: [] },
-    collections: ["Inbox", "Today", "This week", "Longer", "Grocery", "Career", "Health", "Projects", "Someday"], importedCount: tasks.length,
+    collections: ["Inbox", "Today", "This week", "Longer", "Grocery", "Career", "Health", "Projects", "Someday"],
+    visibility: { goals: true, purchases: true },
+    importedCount: tasks.length,
   };
 }

@@ -14,8 +14,9 @@ import {
   unlinkFromGroup,
   updateBoardItem,
   updateList,
+  updateVisibility,
 } from "@/lib/server/board-store";
-import type { EditableChanges, EditableList } from "@/lib/board-types";
+import type { EditableChanges, EditableList, HomeVisibility } from "@/lib/board-types";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +54,7 @@ export async function POST(request: Request) {
       targetId?: string;
       orderedIds?: string[];
       pin?: { id: string; pinned: boolean };
+      visibility?: Partial<HomeVisibility>;
     };
 
     if (body.action === "create") {
@@ -93,6 +95,9 @@ export async function POST(request: Request) {
     }
     if (body.action === "sync_notion") {
       return Response.json(await syncNotion(ownerId));
+    }
+    if (body.action === "set_visibility" && body.visibility) {
+      return Response.json({ visibility: await updateVisibility(ownerId, body.visibility) });
     }
     return Response.json({ error: "Unknown board action." }, { status: 400 });
   } catch (error) {

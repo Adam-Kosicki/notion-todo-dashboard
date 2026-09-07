@@ -1221,6 +1221,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 .lists-section-head svg { width: 16px; color: #73b5ff; }
 .lists-section-head h2 { margin: 0; color: #f1efeb; font-size: 15px; font-weight: 800; }
 .lists-section-head small { color: #6e7b89; font-size: 11px; }
+.visibility-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-left: auto;
+  color: #aeb8c2;
+  font-size: 12px;
+  font-weight: 600;
+}
+.visibility-toggle-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.goal-capture > svg { color: #f0b429; }
 .collections-grid {
   display: grid;
   align-items: start;
@@ -1307,6 +1318,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
   cursor: pointer;
 }
 .tri-toggle button.selected { border-color: #58a0f8; background: rgba(88, 160, 248, 0.14); color: #fff; }
+.hidden-count { color: #f0b429; font-style: normal; font-weight: 700; }
 .list-delete-trigger {
   display: inline-flex;
   align-items: center;

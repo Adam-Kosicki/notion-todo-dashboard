@@ -317,6 +317,7 @@ function rowToList(row: any): BoardList {
     pinned: preferences.pinned === true,
     rule: preferences.rule || "manual",
     itemSort: preferences.itemSort || "priority",
+    showPurchases: "showPurchases" in preferences ? preferences.showPurchases : null,
   };
 }
 
@@ -494,6 +495,7 @@ export async function updateList(ownerId: string, id: string, changes: EditableL
   if ("rule" in changes && !LIST_RULES.some(rule => rule.value === changes.rule)) throw new Error("Choose a valid list rule.");
   if ("itemSort" in changes && !LIST_SORTS.some(sort => sort.value === changes.itemSort)) throw new Error("Choose a valid sorting option.");
   if ("pinned" in changes && typeof changes.pinned !== "boolean") throw new Error("Invalid pin setting.");
+  if ("showPurchases" in changes && changes.showPurchases !== null && typeof changes.showPurchases !== "boolean") throw new Error("Invalid purchases visibility setting.");
   if (changes.defaultItemType && !ITEM_TYPES.includes(changes.defaultItemType)) throw new Error("Choose a valid item type.");
   if ("name" in changes && !changes.name?.trim()) throw new Error("Give the list a name first.");
   const statements = [];
@@ -518,8 +520,8 @@ export async function updateList(ownerId: string, id: string, changes: EditableL
   if ("reminderDefault" in changes) { sets.push("reminder_default = ?"); values.push(nullable(changes.reminderDefault)); }
   if ("defaultItemType" in changes) { sets.push("default_item_type = ?"); values.push(nullable(changes.defaultItemType)); }
 
-  if (["pinned", "rule", "itemSort"].some(key => key in changes)) {
-    const preferences = Object.fromEntries(Object.entries(changes).filter(([key]) => ["pinned", "rule", "itemSort"].includes(key)));
+  if (["pinned", "rule", "itemSort", "showPurchases"].some(key => key in changes)) {
+    const preferences = Object.fromEntries(Object.entries(changes).filter(([key]) => ["pinned", "rule", "itemSort", "showPurchases"].includes(key)));
     statements.push(db.prepare("INSERT INTO app_meta (owner_id, key, value) VALUES (?, ?, ?) ON CONFLICT(owner_id, key) DO UPDATE SET value = json_patch(app_meta.value, excluded.value)")
       .bind(ownerId, `list_preferences:${id}`, JSON.stringify(preferences)));
   }
@@ -567,6 +569,21 @@ function collectRelations(items: BoardItem[], key: "area" | "project" | "goal") 
   return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
+export async function getVisibility(ownerId: string) {
+  const row = await runtime().DB.prepare("SELECT value FROM app_meta WHERE owner_id = ? AND key = 'home_visibility'").bind(ownerId).first() as { value: string } | null;
+  const stored = row ? JSON.parse(row.value) : {};
+  return { goals: stored.goals !== false, purchases: stored.purchases !== false };
+}
+
+export async function updateVisibility(ownerId: string, changes: { goals?: boolean; purchases?: boolean }) {
+  if (("goals" in changes && typeof changes.goals !== "boolean") || ("purchases" in changes && typeof changes.purchases !== "boolean")) {
+    throw new Error("Invalid visibility setting.");
+  }
+  await runtime().DB.prepare("INSERT INTO app_meta (owner_id, key, value) VALUES (?, 'home_visibility', ?) ON CONFLICT(owner_id, key) DO UPDATE SET value = json_patch(app_meta.value, excluded.value)")
+    .bind(ownerId, JSON.stringify(changes)).run();
+  return getVisibility(ownerId);
+}
+
 export async function getBoard(ownerId: string): Promise<BoardPayload> {
   await ensureSeed(ownerId);
   await ensureOrganization(ownerId);
@@ -605,6 +622,7 @@ export async function getBoard(ownerId: string): Promise<BoardPayload> {
     },
     collections: [...new Set([...boardLists.map(list => list.name), ...items.map((item) => item.collection).filter(Boolean) as string[]])].sort((a, b) => a.localeCompare(b)),
     lists: boardLists,
+    visibility: await getVisibility(ownerId),
     importedCount: items.length,
   };
 }

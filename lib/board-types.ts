@@ -56,6 +56,7 @@ export type BoardList = {
   pinned?: boolean;
   rule?: ListRule;
   itemSort?: ListItemSort;
+  showPurchases?: boolean | null;
 };
 
 export const LIST_TYPES: Array<{
@@ -76,7 +77,9 @@ export function listTypeDefaults(type: string) {
   return LIST_TYPES.find((entry) => entry.value === type) || LIST_TYPES[0];
 }
 
-export type EditableList = Partial<Pick<BoardList, "name" | "type" | "showPriority" | "showLongTermGoals" | "reminderDefault" | "defaultItemType" | "pinned" | "rule" | "itemSort">>;
+export type EditableList = Partial<Pick<BoardList, "name" | "type" | "showPriority" | "showLongTermGoals" | "reminderDefault" | "defaultItemType" | "pinned" | "rule" | "itemSort" | "showPurchases">>;
+
+export type HomeVisibility = { goals: boolean; purchases: boolean };
 
 export type BoardPayload = {
   items: BoardItem[];
@@ -84,6 +87,7 @@ export type BoardPayload = {
   relations: { areas: RelationOption[]; projects: RelationOption[]; goals: RelationOption[] };
   collections: string[];
   lists: BoardList[];
+  visibility: HomeVisibility;
   importedCount: number;
 };
 
