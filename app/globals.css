@@ -701,6 +701,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 }
 .delete-confirm-inline button.danger { border-color: rgba(255, 92, 92, 0.6); color: #ff5c5c; }
 .quick-toolbar button.has-date { color: color-mix(in srgb, var(--heat-color) 60%, #aeb8c2); border-color: color-mix(in srgb, var(--heat-color) 40%, #303b48); }
+/* Today/Month/Year extension: one "Plan" popover replaces the standalone "Add to week" pill,
+   consolidating Today/Week/Month/Year into a single row control (Adam's clutter feedback). */
+.quick-toolbar button.plan-action.is-active { color: #58a0f8; border-color: rgba(88, 160, 248, 0.4); }
+.plan-dots { display: inline-flex; gap: 2px; }
+.plan-dots i { width: 4px; height: 4px; border-radius: 999px; background: currentColor; display: inline-block; }
+.plan-popover { display: flex; width: auto; flex-direction: column; padding: 8px; gap: 2px; }
+.plan-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.plan-row:hover { background: rgba(255, 255, 255, 0.06); }
+.plan-row.is-disabled { opacity: 0.45; cursor: not-allowed; }
 .date-quick-popover { display: flex; width: auto; flex-direction: column; padding: 8px; gap: 6px; }
 .date-quick-popover .date-clear {
   display: inline-flex;
@@ -1366,6 +1375,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 .hidden-count { color: #f0b429; font-style: normal; font-weight: 700; }
 .focus-count { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; color: #f0b429; font-style: normal; font-weight: 700; }
 .focus-count svg { width: 10px; height: 10px; }
+/* Today/Month/Year extension (docs/adr/local/time-horizon-quick-actions.md): a distinct blue
+   accent from Focus's gold, so the two concepts read as visually separate at a glance. */
+.focus-count.period-count { color: #58a0f8; }
 .list-delete-trigger {
   display: inline-flex;
   align-items: center;

@@ -83,7 +83,7 @@ export type HomeVisibility = { goals: boolean; purchases: boolean };
 // (lib/server/queries.ts, lib/domain/progress.ts) - erased at build time, so importing them here
 // doesn't pull server code into the client bundle. Kept as re-exports so board-app.tsx and the
 // new focus/weekly-progress components have one place to import board-shaped types from.
-export type { FocusItemDisplay, WeekProgress, WeekCommitmentDisplay } from "@/lib/server/queries";
+export type { FocusItemDisplay, WeekProgress, WeekCommitmentDisplay, PeriodProgress, PeriodCommitmentDisplay } from "@/lib/server/queries";
 
 export type BoardPayload = {
   items: BoardItem[];
@@ -97,6 +97,11 @@ export type BoardPayload = {
   // merges them in separately from lib/server/queries.ts) - and sample/demo mode has neither.
   focus?: import("@/lib/server/queries").FocusItemDisplay[];
   weekProgress?: import("@/lib/server/queries").WeekProgress;
+  // Today/Month/Year extension (docs/adr/local/time-horizon-quick-actions.md) - same optionality
+  // rationale as weekProgress above.
+  todayProgress?: import("@/lib/server/queries").PeriodProgress;
+  monthProgress?: import("@/lib/server/queries").PeriodProgress;
+  yearProgress?: import("@/lib/server/queries").PeriodProgress;
 };
 
 export type EditableChanges = Partial<Pick<BoardItem,

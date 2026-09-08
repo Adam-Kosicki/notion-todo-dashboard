@@ -38,6 +38,8 @@ import {
   type ListsCreateInput,
   type ListsDeleteInput,
   type ListsUpdateInput,
+  type PeriodCommitInput,
+  type PeriodWithdrawInput,
   type WeekCloseInput,
   type WeekCommitInput,
   type WeekWithdrawInput,
@@ -53,6 +55,8 @@ import {
   findItemRow,
   findListByName,
   findListRow,
+  findPeriodCommitment,
+  findPlanningPeriod,
   findPlanningWeek,
   findWeekCommitment,
   getBoardState,
@@ -61,7 +65,9 @@ import {
   revisionGuard,
   saveReceipt,
   setFocusItemStmt,
+  upsertPeriodCommitmentStmt,
   upsertWeekCommitmentStmt,
+  withdrawPeriodCommitmentStmt,
   withdrawWeekCommitmentStmt,
   type Database,
   type ItemRow,
@@ -486,6 +492,76 @@ async function weekWithdrawPlan(db: Database, ownerId: string, input: WeekWithdr
   };
 }
 
+// --- Phase 3 extension: generic Today/Month/Year periods -----------------------------------
+// Same shape as weekCommitPlan/weekWithdrawPlan above, reused generically across period types
+// (period_type is data, not a code branch) - see db/schema.ts's planningPeriods comment. No
+// period.close: unlike a week, which needs an explicit freeze so late edits don't rewrite an
+// already-reported week, an unclosed period already reports correctly because computePeriodStats
+// bounds on-time credit against the period's own end instant regardless of open/closed status
+// (see lib/domain/progress.ts's completionAsOf) - so requiring a manual close click daily/monthly/
+// yearly would add owner busywork with no correctness benefit. A future period.close can still be
+// added the same way week.close was, without a migration (planning_periods.status already exists).
+
+async function periodCommitPlan(db: Database, ownerId: string, input: PeriodCommitInput): Promise<NoopOutcome | AtomicOutcome> {
+  const period = await findPlanningPeriod(db, ownerId, input.periodId);
+  if (!period) throw new CommandError("NOT_FOUND", "Planning period not found.");
+  if (period.period_type !== input.periodType) throw new CommandError("VALIDATION_FAILED", "periodType does not match periodId.");
+  const item = await findItemRow(db, ownerId, input.itemId);
+  if (!item) throw new CommandError("VALIDATION_FAILED", "itemId does not refer to an existing item.");
+
+  const existing = await findPeriodCommitment(db, ownerId, input.periodId, input.itemId);
+  if (existing && !existing.withdrawn_at) {
+    return { kind: "noop", outcome: { result: { periodId: input.periodId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] } };
+  }
+
+  const { revision: expectedBoardRevision } = await getBoardState(db, ownerId);
+  const now = new Date().toISOString();
+  return {
+    kind: "atomic",
+    plan: {
+      guardSql: "EXISTS (SELECT 1 FROM planning_periods WHERE owner_id = ? AND id = ? AND status = 'open')",
+      guardParams: [ownerId, input.periodId],
+      expectedBoardRevision,
+      primaryStatement: upsertPeriodCommitmentStmt(db, ownerId, input.periodId, input.itemId, now, expectedBoardRevision),
+      result: { periodId: input.periodId, itemId: input.itemId },
+      changedItemIds: [input.itemId],
+      changedListIds: [],
+      activity: [{ entityId: input.itemId, eventType: "period.commit", before: null, after: { periodId: input.periodId, periodType: input.periodType } }],
+      onZeroChanges: () => new CommandError("CONFLICT", "This period is closed."),
+    },
+  };
+}
+
+async function periodWithdrawPlan(db: Database, ownerId: string, input: PeriodWithdrawInput): Promise<NoopOutcome | AtomicOutcome> {
+  const period = await findPlanningPeriod(db, ownerId, input.periodId);
+  if (!period) throw new CommandError("NOT_FOUND", "Planning period not found.");
+  if (period.period_type !== input.periodType) throw new CommandError("VALIDATION_FAILED", "periodType does not match periodId.");
+  const existing = await findPeriodCommitment(db, ownerId, input.periodId, input.itemId);
+  if (!existing) throw new CommandError("NOT_FOUND", "This item is not committed to this period.");
+  if (existing.withdrawn_at) {
+    return { kind: "noop", outcome: { result: { periodId: input.periodId, itemId: input.itemId }, changedItemIds: [input.itemId], changedListIds: [], activity: [] } };
+  }
+
+  const { revision: expectedBoardRevision } = await getBoardState(db, ownerId);
+  const now = new Date().toISOString();
+  return {
+    kind: "atomic",
+    plan: {
+      guardSql:
+        "EXISTS (SELECT 1 FROM planning_periods WHERE owner_id = ? AND id = ? AND status = 'open')" +
+        " AND EXISTS (SELECT 1 FROM period_commitments WHERE owner_id = ? AND period_id = ? AND item_id = ? AND withdrawn_at IS NULL)",
+      guardParams: [ownerId, input.periodId, ownerId, input.periodId, input.itemId],
+      expectedBoardRevision,
+      primaryStatement: withdrawPeriodCommitmentStmt(db, ownerId, input.periodId, input.itemId, input.reason ?? null, now, expectedBoardRevision),
+      result: { periodId: input.periodId, itemId: input.itemId },
+      changedItemIds: [input.itemId],
+      changedListIds: [],
+      activity: [{ entityId: input.itemId, eventType: "period.withdraw", before: null, after: { periodId: input.periodId, periodType: input.periodType, reason: input.reason ?? null } }],
+      onZeroChanges: () => new CommandError("CONFLICT", "This period is closed, or the commitment was already withdrawn by another request."),
+    },
+  };
+}
+
 /**
  * Astra review Blocker B: closing reads commitments/items/events, computes stats in JS, then
  * writes the frozen snapshot - a read-compute-write sequence that can't be expressed as a single
@@ -672,6 +748,8 @@ const ATOMIC_HANDLERS: Partial<Record<CommandAction, (db: Database, ownerId: str
   "week.commit": weekCommitPlan,
   "week.withdraw": weekWithdrawPlan,
   "week.close": weekClosePlan,
+  "period.commit": periodCommitPlan,
+  "period.withdraw": periodWithdrawPlan,
 };
 
 // Partial: focus.*/week.* are dispatched through ATOMIC_HANDLERS instead (see applyCommand).

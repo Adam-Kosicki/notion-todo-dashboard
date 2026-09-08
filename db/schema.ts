@@ -225,3 +225,48 @@ export const weekCommitments = sqliteTable(
     index("idx_week_commitments_owner_week").on(table.ownerId, table.weekId),
   ],
 );
+
+// Phase 3 extension (docs/adr/local/time-horizon-quick-actions.md, 2026-09-08): a generic
+// Today/Month/Year counterpart to planning_weeks, deliberately NOT unified with it - the weekly
+// path above already went through three rounds of Astra review and stays untouched. One generic
+// table (period_type discriminates day/month/year) rather than three near-duplicate tables, since
+// lib/domain/progress.ts's stats math only ever needed {startDate,endDate,timezone} - it was
+// already period-shape-agnostic under the "week" name. No 'closing'/'closed' transition is used
+// yet (status stays 'open' indefinitely - see commands.ts's periodCommitPlan/periodWithdrawPlan
+// comment for why an explicit freeze step isn't needed for v1); the column exists so a future
+// period.close can be added the same way week.close was, without another migration.
+export const planningPeriods = sqliteTable(
+  "planning_periods",
+  {
+    ownerId: text("owner_id").notNull(),
+    id: text("id").notNull(),
+    periodType: text("period_type").notNull(),
+    startDate: text("start_date").notNull(),
+    endDate: text("end_date").notNull(),
+    timezone: text("timezone").notNull(),
+    status: text("status").notNull().default("open"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerId, table.id] }),
+    uniqueIndex("idx_planning_periods_owner_type_start_unique").on(table.ownerId, table.periodType, table.startDate),
+  ],
+);
+
+// Same withdraw-in-place shape as week_commitments, for the same reason (denominator includes
+// withdrawals).
+export const periodCommitments = sqliteTable(
+  "period_commitments",
+  {
+    ownerId: text("owner_id").notNull(),
+    periodId: text("period_id").notNull(),
+    itemId: text("item_id").notNull(),
+    addedAt: text("added_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    withdrawnAt: text("withdrawn_at"),
+    withdrawalReason: text("withdrawal_reason"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerId, table.periodId, table.itemId] }),
+    index("idx_period_commitments_owner_period").on(table.ownerId, table.periodId),
+  ],
+);

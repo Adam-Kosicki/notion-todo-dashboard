@@ -314,6 +314,90 @@ export function withdrawWeekCommitmentStmt(db: Database, ownerId: string, weekId
     .bind(now, reason, ownerId, weekId, itemId, ownerId, weekId, ...guard.params);
 }
 
+// --- Phase 3 extension: generic Today/Month/Year periods -----------------------------------
+// Mirrors the planning_weeks/week_commitments functions above exactly, one table pair for all
+// three period types (period_type is data, not a code branch) - see db/schema.ts's
+// planningPeriods/periodCommitments comment for why this stays a separate table pair from
+// planning_weeks rather than unifying with it. No 'closing' transition/finalize-close statement
+// yet - v1 periods never close (see commands.ts's periodCommitPlan comment).
+
+export type PlanningPeriodRow = {
+  owner_id: string;
+  id: string;
+  period_type: string;
+  start_date: string;
+  end_date: string;
+  timezone: string;
+  status: string;
+};
+
+export async function findPlanningPeriod(db: Database, ownerId: string, id: string): Promise<PlanningPeriodRow | null> {
+  return db.prepare("SELECT * FROM planning_periods WHERE owner_id = ? AND id = ?").bind(ownerId, id).first<PlanningPeriodRow>();
+}
+
+export async function findPlanningPeriodByTypeAndStart(db: Database, ownerId: string, periodType: string, startDate: string): Promise<PlanningPeriodRow | null> {
+  return db
+    .prepare("SELECT * FROM planning_periods WHERE owner_id = ? AND period_type = ? AND start_date = ?")
+    .bind(ownerId, periodType, startDate)
+    .first<PlanningPeriodRow>();
+}
+
+export async function createPlanningPeriod(db: Database, ownerId: string, id: string, periodType: string, startDate: string, endDate: string, timezone: string): Promise<void> {
+  await db
+    .prepare("INSERT INTO planning_periods (owner_id, id, period_type, start_date, end_date, timezone, status) VALUES (?, ?, ?, ?, ?, ?, 'open')")
+    .bind(ownerId, id, periodType, startDate, endDate, timezone)
+    .run();
+}
+
+export type PeriodCommitmentRow = {
+  owner_id: string;
+  period_id: string;
+  item_id: string;
+  added_at: string;
+  withdrawn_at: string | null;
+  withdrawal_reason: string | null;
+};
+
+export async function findPeriodCommitment(db: Database, ownerId: string, periodId: string, itemId: string): Promise<PeriodCommitmentRow | null> {
+  return db
+    .prepare("SELECT * FROM period_commitments WHERE owner_id = ? AND period_id = ? AND item_id = ?")
+    .bind(ownerId, periodId, itemId)
+    .first<PeriodCommitmentRow>();
+}
+
+export async function listPeriodCommitments(db: Database, ownerId: string, periodId: string): Promise<PeriodCommitmentRow[]> {
+  const result = await db
+    .prepare("SELECT * FROM period_commitments WHERE owner_id = ? AND period_id = ?")
+    .bind(ownerId, periodId)
+    .all<PeriodCommitmentRow>();
+  return result.results;
+}
+
+/** Same shape as upsertWeekCommitmentStmt: database-enforced "period must still be open" + board-revision guard, and handles re-adding a withdrawn commitment. */
+export function upsertPeriodCommitmentStmt(db: Database, ownerId: string, periodId: string, itemId: string, now: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
+  return db
+    .prepare(
+      `INSERT INTO period_commitments (owner_id, period_id, item_id, added_at)
+       SELECT ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM planning_periods WHERE owner_id = ? AND id = ? AND status = 'open') AND ${guard.sql}
+       ON CONFLICT (owner_id, period_id, item_id) DO UPDATE SET withdrawn_at = NULL, withdrawal_reason = NULL, added_at = excluded.added_at`,
+    )
+    .bind(ownerId, periodId, itemId, now, ownerId, periodId, ...guard.params);
+}
+
+/** Same shape as withdrawWeekCommitmentStmt, including `withdrawn_at IS NULL` as part of this statement's own precondition (see commands.ts's periodWithdrawPlan for why the bookkeeping guard must match exactly). */
+export function withdrawPeriodCommitmentStmt(db: Database, ownerId: string, periodId: string, itemId: string, reason: string | null, now: string, expectedBoardRevision: number): PreparedStatement {
+  const guard = revisionGuard(ownerId, expectedBoardRevision);
+  return db
+    .prepare(
+      `UPDATE period_commitments SET withdrawn_at = ?, withdrawal_reason = ?
+       WHERE owner_id = ? AND period_id = ? AND item_id = ? AND withdrawn_at IS NULL
+       AND EXISTS (SELECT 1 FROM planning_periods WHERE owner_id = ? AND id = ? AND status = 'open') AND ${guard.sql}`,
+    )
+    .bind(now, reason, ownerId, periodId, itemId, ownerId, periodId, ...guard.params);
+}
+
 /**
  * Astra review (round 2 re-review): `after_json` is included specifically so callers can recover
  * `weekId` for week.commit/week.withdraw rows (see commands.ts's weekClosePlan) - entity_id is the

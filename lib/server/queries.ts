@@ -2,19 +2,23 @@
 // Deliberately minimal this phase - History, cursor pagination, and scoped-context queries
 // belong to phases 2-4 as their UI/MCP consumers land. Same runtime-agnostic Database
 // dependency-injection pattern as repository.ts/commands.ts - see repository.ts's file comment.
-import { computeWeekStats, mondayStartOf, weekEndDate, type WeekStats } from "@/lib/domain/progress";
+import { computePeriodStats, mondayStartOf, periodEndDate, periodStartOf, weekEndDate, type PeriodStats, type PeriodType } from "@/lib/domain/progress";
 import {
+  createPlanningPeriod,
   createPlanningWeek,
   findItemRow,
+  findPlanningPeriodByTypeAndStart,
   findPlanningWeekByStartDate,
   getBoardState,
   listActivityEventsForItems,
   listFocusItems,
+  listPeriodCommitments,
   listWeekCommitments,
   type Database,
   type FocusItemRow,
   type ItemRow,
   type ListRow,
+  type PlanningPeriodRow,
   type PlanningWeekRow,
 } from "@/lib/server/repository";
 
@@ -79,9 +83,9 @@ export async function getOrCreateCurrentPlanningWeek(db: Database, ownerId: stri
  * while the week is still open) - one implementation of "replay this week's commit/withdraw and
  * complete/reopen history," not two.
  */
-export async function computeCurrentWeekStats(db: Database, ownerId: string, week: Pick<PlanningWeekRow, "id" | "start_date" | "timezone" | "status" | "report_json">): Promise<WeekStats> {
+export async function computeCurrentWeekStats(db: Database, ownerId: string, week: Pick<PlanningWeekRow, "id" | "start_date" | "timezone" | "status" | "report_json">): Promise<PeriodStats> {
   if (week.status === "closed") {
-    return JSON.parse(week.report_json ?? "null") as WeekStats;
+    return JSON.parse(week.report_json ?? "null") as PeriodStats;
   }
   const commitments = await listWeekCommitments(db, ownerId, week.id);
   const itemIds = commitments.map((commitment) => commitment.item_id);
@@ -102,8 +106,8 @@ export async function computeCurrentWeekStats(db: Database, ownerId: string, wee
     return after?.weekId === week.id;
   });
 
-  return computeWeekStats({
-    week: { startDate: week.start_date, endDate: weekEndDate(week.start_date), timezone: week.timezone },
+  return computePeriodStats({
+    period: { startDate: week.start_date, endDate: weekEndDate(week.start_date), timezone: week.timezone },
     commitments: commitments.map((commitment) => ({ itemId: commitment.item_id, withdrawnAt: commitment.withdrawn_at })),
     itemsById,
     events: statusEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
@@ -125,7 +129,7 @@ export type WeekProgress = {
   startDate: string;
   timezone: string;
   status: string;
-  stats: WeekStats;
+  stats: PeriodStats;
   commitments: WeekCommitmentDisplay[];
 };
 
@@ -148,6 +152,104 @@ export async function getWeekProgress(db: Database, ownerId: string, week: Plann
     };
   });
   return { weekId: week.id, startDate: week.start_date, timezone: week.timezone, status: week.status, stats, commitments };
+}
+
+// --- Phase 3 extension: Today/Month/Year periods -------------------------------------------
+// Same shape as the week functions above, reused generically across period types rather than
+// duplicated per type - see db/schema.ts's planningPeriods comment and
+// docs/adr/local/time-horizon-quick-actions.md for why this is a separate system from weekly.
+
+/**
+ * Same find-or-create-with-race-fallback pattern as getOrCreateCurrentPlanningWeek, picking the
+ * boundary via lib/domain/progress.ts's periodStartOf/periodEndDate by period type.
+ */
+export async function getOrCreateCurrentPlanningPeriod(db: Database, ownerId: string, periodType: PeriodType, timezone: string = DEFAULT_PLANNING_TIMEZONE): Promise<PlanningPeriodRow> {
+  const startDate = periodStartOf(periodType, new Date(), timezone);
+  const existing = await findPlanningPeriodByTypeAndStart(db, ownerId, periodType, startDate);
+  if (existing) return existing;
+  const endDate = periodEndDate(periodType, startDate);
+  try {
+    await createPlanningPeriod(db, ownerId, `${periodType}_${startDate}`, periodType, startDate, endDate, timezone);
+  } catch {
+    // Lost the race to a concurrent first-touch - fall through to the re-read below.
+  }
+  const row = await findPlanningPeriodByTypeAndStart(db, ownerId, periodType, startDate);
+  if (!row) throw new Error(`Failed to create or find the current ${periodType} period.`);
+  return row;
+}
+
+/**
+ * Same shape as computeCurrentWeekStats, minus the closed/frozen-snapshot branch - v1 periods
+ * never close (see commands.ts's periodCommitPlan comment), so this always computes live. The
+ * live computation is already correctly time-bounded against the period's own end instant (see
+ * lib/domain/progress.ts's completionAsOf), so an unclosed period still reports late completions
+ * correctly - closing isn't needed for correctness, only as a future optional freeze/optimization.
+ */
+export async function computeCurrentPeriodStats(db: Database, ownerId: string, period: Pick<PlanningPeriodRow, "id" | "start_date" | "end_date" | "timezone">): Promise<PeriodStats> {
+  const commitments = await listPeriodCommitments(db, ownerId, period.id);
+  const itemIds = commitments.map((commitment) => commitment.item_id);
+  const itemRows = await Promise.all(itemIds.map((id) => findItemRow(db, ownerId, id)));
+  const itemsById: Record<string, { itemType: string }> = {};
+  itemRows.forEach((row, index) => {
+    if (row) itemsById[itemIds[index]] = { itemType: row.item_type };
+  });
+  const allEvents = await listActivityEventsForItems(db, ownerId, itemIds, ["items.complete", "items.reopen", "period.commit", "period.withdraw"]);
+  const statusEvents = allEvents.filter((event): event is typeof event & { event_type: "items.complete" | "items.reopen" } =>
+    event.event_type === "items.complete" || event.event_type === "items.reopen",
+  );
+  // Scoped to this specific period the same way computeCurrentWeekStats scopes to one week - the
+  // same item can be committed to multiple different periods (and period types) independently.
+  const commitmentEvents = allEvents.filter((event): event is typeof event & { event_type: "period.commit" | "period.withdraw" } => {
+    if (event.event_type !== "period.commit" && event.event_type !== "period.withdraw") return false;
+    const after = event.after_json ? (JSON.parse(event.after_json) as { periodId?: string }) : null;
+    return after?.periodId === period.id;
+  });
+
+  return computePeriodStats({
+    period: { startDate: period.start_date, endDate: period.end_date, timezone: period.timezone },
+    commitments: commitments.map((commitment) => ({ itemId: commitment.item_id, withdrawnAt: commitment.withdrawn_at })),
+    itemsById,
+    events: statusEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
+    commitmentEvents: commitmentEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
+  });
+}
+
+export type PeriodCommitmentDisplay = {
+  itemId: string;
+  title: string;
+  itemType: string;
+  status: string;
+  withdrawnAt: string | null;
+  withdrawalReason: string | null;
+};
+
+export type PeriodProgress = {
+  periodId: string;
+  periodType: PeriodType;
+  startDate: string;
+  timezone: string;
+  status: string;
+  stats: PeriodStats;
+  commitments: PeriodCommitmentDisplay[];
+};
+
+/** Same shape as getWeekProgress, for a generic Today/Month/Year period. */
+export async function getPeriodProgress(db: Database, ownerId: string, period: PlanningPeriodRow): Promise<PeriodProgress> {
+  const commitmentRows = await listPeriodCommitments(db, ownerId, period.id);
+  const itemRows = await Promise.all(commitmentRows.map((commitment) => findItemRow(db, ownerId, commitment.item_id)));
+  const stats = await computeCurrentPeriodStats(db, ownerId, period);
+  const commitments: PeriodCommitmentDisplay[] = commitmentRows.map((commitment, index) => {
+    const item = itemRows[index];
+    return {
+      itemId: commitment.item_id,
+      title: item?.title ?? "(deleted item)",
+      itemType: item?.item_type ?? "Task",
+      status: item?.status ?? "Done",
+      withdrawnAt: commitment.withdrawn_at,
+      withdrawalReason: commitment.withdrawal_reason,
+    };
+  });
+  return { periodId: period.id, periodType: period.period_type as PeriodType, startDate: period.start_date, timezone: period.timezone, status: period.status, stats, commitments };
 }
 
 export type FocusItemDisplay = {

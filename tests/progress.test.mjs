@@ -9,7 +9,7 @@ import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const vite = await createServer({ appType: "custom", configFile: false, root, resolve: { alias: { "@": root } }, server: { middlewareMode: true } });
-const { computeWeekStats, weekEndDate, mondayStartOf, zonedMidnightUtc } = await vite.ssrLoadModule("/lib/domain/progress.ts");
+const { computeWeekStats, computePeriodStats, weekEndDate, mondayStartOf, zonedMidnightUtc, dayStartOf, dayEndDate, monthStartOf, monthEndDate, yearStartOf, yearEndDate } = await vite.ssrLoadModule("/lib/domain/progress.ts");
 
 test.after(async () => {
   await vite.close();
@@ -193,4 +193,50 @@ test("mondayStartOf finds the correct Monday for a mid-week date in a named time
 test("mondayStartOf returns the same date when now is already a Monday", () => {
   const mondayNoonUtc = new Date("2026-09-07T12:00:00Z");
   assert.equal(mondayStartOf(mondayNoonUtc, "America/Chicago"), "2026-09-07");
+});
+
+// --- Phase 3 extension (docs/adr/local/time-horizon-quick-actions.md): Today/Month/Year -------
+
+test("computePeriodStats gives identical results to computeWeekStats on the same inputs - the rename didn't change behavior", () => {
+  const params = {
+    commitments: [{ itemId: "a", withdrawnAt: null }, { itemId: "b", withdrawnAt: "2026-09-09T10:00:00.000Z" }],
+    itemsById: { a: { itemType: "Task" }, b: { itemType: "Task" } },
+    events: [{ itemId: "a", eventType: "items.complete", timestamp: "2026-09-08T00:00:00.000Z" }],
+    commitmentEvents: [],
+  };
+  const viaWeek = computeWeekStats({ week: UTC_WEEK, ...params });
+  const viaPeriod = computePeriodStats({ period: UTC_WEEK, ...params });
+  assert.deepEqual(viaPeriod, viaWeek);
+});
+
+test("computePeriodStats replays period.commit/period.withdraw history the same way it replays week.commit/week.withdraw", () => {
+  const stats = computePeriodStats({
+    period: UTC_WEEK,
+    commitments: [{ itemId: "a", withdrawnAt: null }],
+    itemsById: { a: { itemType: "Task" } },
+    events: [{ itemId: "a", eventType: "items.complete", timestamp: "2026-09-08T00:00:00.000Z" }],
+    commitmentEvents: [
+      { itemId: "a", eventType: "period.commit", timestamp: "2026-09-07T00:00:00.000Z" },
+      { itemId: "a", eventType: "period.withdraw", timestamp: "2026-09-08T00:00:00.000Z" }, // withdrawn before completing
+    ],
+  });
+  assert.equal(stats.completed, 0, "completing while withdrawn (via period.withdraw) must not count, same rule as week.withdraw");
+});
+
+test("dayStartOf/dayEndDate: today's date and the next calendar day", () => {
+  const noonUtc = new Date("2026-09-10T12:00:00Z");
+  assert.equal(dayStartOf(noonUtc, "America/Chicago"), "2026-09-10");
+  assert.equal(dayEndDate("2026-09-10"), "2026-09-11");
+});
+
+test("monthStartOf/monthEndDate: first of the month, and correctly across a short month (February)", () => {
+  assert.equal(monthStartOf(new Date("2026-09-10T12:00:00Z"), "America/Chicago"), "2026-09-01");
+  assert.equal(monthEndDate("2026-09-01"), "2026-10-01");
+  assert.equal(monthEndDate("2026-02-01"), "2026-03-01", "must not day-count through February's shorter length");
+  assert.equal(monthEndDate("2026-12-01"), "2027-01-01", "must roll the year over at December");
+});
+
+test("yearStartOf/yearEndDate: January 1, and the next year", () => {
+  assert.equal(yearStartOf(new Date("2026-09-10T12:00:00Z"), "America/Chicago"), "2026-01-01");
+  assert.equal(yearEndDate("2026-01-01"), "2027-01-01");
 });

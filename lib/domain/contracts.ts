@@ -156,6 +156,23 @@ export type WeekWithdrawInput = z.infer<typeof WeekWithdrawSchema>;
 export const WeekCloseSchema = z.object({ weekId: idSchema });
 export type WeekCloseInput = z.infer<typeof WeekCloseSchema>;
 
+// --- Phase 3 extension: generic Today/Month/Year periods (see db/schema.ts's planningPeriods
+// comment and docs/adr/local/time-horizon-quick-actions.md) - same commit/withdraw shape as
+// week.commit/week.withdraw, plus periodType so the handler knows which boundary helper to use
+// when the periodId needs to be resolved/created. No period.close yet (v1 periods never close).
+export const PeriodTypeSchema = z.enum(["day", "month", "year"]);
+
+export const PeriodCommitSchema = z.object({ periodType: PeriodTypeSchema, periodId: idSchema, itemId: idSchema });
+export type PeriodCommitInput = z.infer<typeof PeriodCommitSchema>;
+
+export const PeriodWithdrawSchema = z.object({
+  periodType: PeriodTypeSchema,
+  periodId: idSchema,
+  itemId: idSchema,
+  reason: z.string().max(500).nullable().optional(),
+});
+export type PeriodWithdrawInput = z.infer<typeof PeriodWithdrawSchema>;
+
 export const COMMAND_SCHEMAS = {
   "items.create": ItemsCreateSchema,
   "items.update": ItemsUpdateSchema,
@@ -172,6 +189,8 @@ export const COMMAND_SCHEMAS = {
   "week.commit": WeekCommitSchema,
   "week.withdraw": WeekWithdrawSchema,
   "week.close": WeekCloseSchema,
+  "period.commit": PeriodCommitSchema,
+  "period.withdraw": PeriodWithdrawSchema,
 } as const;
 export type CommandAction = keyof typeof COMMAND_SCHEMAS;
 

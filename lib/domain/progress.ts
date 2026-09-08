@@ -21,13 +21,19 @@ export type ItemEventInput = {
  * that legitimately happened during an *earlier* active period (select Monday, complete Tuesday,
  * withdraw Wednesday, re-add Thursday used to flip 1/1 to 0/1, with no reopen involved). Fixed by
  * using the full week.commit/week.withdraw event history instead of one current-state column -
- * see computeWeekStats.
+ * see computePeriodStats.
+ *
+ * Widened to also accept period.commit/period.withdraw (Phase 3 extension) when this function
+ * was generalized from computeWeekStats - see COMMIT_EVENT_TYPES below for the "which of these
+ * four literals means active" check this enables.
  */
 export type CommitmentEventInput = {
   itemId: string;
-  eventType: "week.commit" | "week.withdraw";
+  eventType: "week.commit" | "week.withdraw" | "period.commit" | "period.withdraw";
   timestamp: string;
 };
+
+const COMMIT_EVENT_TYPES = new Set<CommitmentEventInput["eventType"]>(["week.commit", "period.commit"]);
 
 export type CommitmentItemInfo = {
   /** "Goal" and "Reference" are excluded from the task completion ratio (contract rule: "Goals
@@ -35,7 +41,7 @@ export type CommitmentItemInfo = {
   itemType: string;
 };
 
-export type WeekStats =
+export type PeriodStats =
   | { status: "no_commitments"; label: "No tasks planned" }
   | {
       status: "computed";
@@ -48,6 +54,8 @@ export type WeekStats =
       goalMilestonesCompleted: number;
       completionRatioLabel: string;
     };
+/** @deprecated Use `PeriodStats` - kept as an alias since the weekly path still imports this name. */
+export type WeekStats = PeriodStats;
 
 /**
  * Astra review (Phase 3 Slice 1, c02e352, first round): the original implementation compared raw
@@ -73,20 +81,27 @@ export type WeekStats =
  * recent selection timestamp." An item with no commit/withdraw history at all (data predating
  * this event's introduction) is treated as active throughout, matching the previous behavior.
  */
-export function computeWeekStats(params: {
-  week: { startDate: string; endDate: string; timezone: string };
+/**
+ * Renamed from `computeWeekStats` (Phase 3 extension, docs/adr/local/time-horizon-quick-actions.md):
+ * this was already period-shape-agnostic - it only ever consumed `{startDate,endDate,timezone}`
+ * plus event history, never anything week-specific - so the Today/Month/Year period system
+ * (lib/server/commands.ts's periodCommitPlan/periodWithdrawPlan) reuses it as-is rather than
+ * duplicating this logic three more times. No behavior change from the reviewed weekly version.
+ */
+export function computePeriodStats(params: {
+  period: { startDate: string; endDate: string; timezone: string };
   commitments: CommitmentInput[];
   itemsById: Record<string, CommitmentItemInfo>;
   events: ItemEventInput[];
   commitmentEvents: CommitmentEventInput[];
-}): WeekStats {
-  const { week, commitments, itemsById, events, commitmentEvents } = params;
+}): PeriodStats {
+  const { period, commitments, itemsById, events, commitmentEvents } = params;
   if (commitments.length === 0) {
     return { status: "no_commitments", label: "No tasks planned" };
   }
 
-  const weekStartInstant = zonedMidnightUtc(week.startDate, week.timezone);
-  const weekEndInstant = zonedMidnightUtc(week.endDate, week.timezone);
+  const weekStartInstant = zonedMidnightUtc(period.startDate, period.timezone);
+  const weekEndInstant = zonedMidnightUtc(period.endDate, period.timezone);
 
   type Timestamped = { timestamp: string };
   const byItem = <T extends Timestamped & { itemId: string }>(list: T[]): Map<string, T[]> => {
@@ -126,7 +141,7 @@ export function computeWeekStats(params: {
     let completedAt: string | null = null;
     for (const event of merged) {
       if (event.kind === "commitment") {
-        isActive = event.eventType === "week.commit";
+        isActive = COMMIT_EVENT_TYPES.has(event.eventType);
       } else if (event.eventType === "items.complete") {
         completedAt = isActive ? event.timestamp : null;
       } else {
@@ -186,6 +201,18 @@ export function computeWeekStats(params: {
   };
 }
 
+/** @deprecated Thin `{week: ...}` -> `{period: ...}` forwarder kept only so tests/progress.test.mjs's existing Astra-reviewed fixtures (which predate the rename) keep working unmodified. New callers should use `computePeriodStats` directly. */
+export function computeWeekStats(params: {
+  week: { startDate: string; endDate: string; timezone: string };
+  commitments: CommitmentInput[];
+  itemsById: Record<string, CommitmentItemInfo>;
+  events: ItemEventInput[];
+  commitmentEvents: CommitmentEventInput[];
+}): PeriodStats {
+  const { week, ...rest } = params;
+  return computePeriodStats({ period: week, ...rest });
+}
+
 /** Exclusive end of the week starting on `startDate` (a YYYY-MM-DD calendar date). */
 export function weekEndDate(startDate: string): string {
   const [year, month, day] = startDate.split("-").map(Number);
@@ -241,4 +268,69 @@ export function mondayStartOf(now: Date, timezone: string): string {
   const utcMidnight = Date.UTC(Number(map.year), Number(map.month) - 1, Number(map.day));
   const monday = new Date(utcMidnight - daysSinceMonday * 86_400_000);
   return monday.toISOString().slice(0, 10);
+}
+
+/** `now`'s calendar date (year/month/day), evaluated in `timezone` - the same zoned-lookup step `mondayStartOf` inlines, shared here for the day/month/year boundary helpers below. */
+function zonedCalendarParts(now: Date, timezone: string): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value])) as Record<string, string>;
+  return { year: Number(map.year), month: Number(map.month), day: Number(map.day) };
+}
+
+// --- Phase 3 extension: Today/Month/Year period boundaries -------------------------------------
+// Each pair mirrors mondayStartOf/weekEndDate's shape (a YYYY-MM-DD start plus an exclusive
+// YYYY-MM-DD end, both evaluated via zonedCalendarParts/UTC calendar-date arithmetic, never
+// day-counting through variable month lengths) - see lib/server/queries.ts's
+// getOrCreateCurrentPlanningPeriod for where these get selected by period type.
+
+/** Today's calendar date (YYYY-MM-DD) in `timezone`. */
+export function dayStartOf(now: Date, timezone: string): string {
+  const { year, month, day } = zonedCalendarParts(now, timezone);
+  return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10);
+}
+
+/** Exclusive end of the day starting on `startDate` - the next calendar day. */
+export function dayEndDate(startDate: string): string {
+  const [year, month, day] = startDate.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day) + 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The first day (YYYY-MM-01) of the calendar month containing `now`, in `timezone`. */
+export function monthStartOf(now: Date, timezone: string): string {
+  const { year, month } = zonedCalendarParts(now, timezone);
+  return new Date(Date.UTC(year, month - 1, 1)).toISOString().slice(0, 10);
+}
+
+/** Exclusive end of the month starting on `startDate` - the first day of the next month (UTC year/month arithmetic, not day-counting, so it's correct across every month length). */
+export function monthEndDate(startDate: string): string {
+  const [year, month] = startDate.split("-").map(Number);
+  return new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+}
+
+/** January 1 (YYYY-01-01) of the calendar year containing `now`, in `timezone`. */
+export function yearStartOf(now: Date, timezone: string): string {
+  const { year } = zonedCalendarParts(now, timezone);
+  return new Date(Date.UTC(year, 0, 1)).toISOString().slice(0, 10);
+}
+
+/** Exclusive end of the year starting on `startDate` - January 1 of the next year. */
+export function yearEndDate(startDate: string): string {
+  const [year] = startDate.split("-").map(Number);
+  return new Date(Date.UTC(year + 1, 0, 1)).toISOString().slice(0, 10);
+}
+
+export type PeriodType = "day" | "month" | "year";
+
+/** Picks the right *StartOf helper by period type - the one place callers branch on period type for boundary computation. */
+export function periodStartOf(periodType: PeriodType, now: Date, timezone: string): string {
+  if (periodType === "day") return dayStartOf(now, timezone);
+  if (periodType === "month") return monthStartOf(now, timezone);
+  return yearStartOf(now, timezone);
+}
+
+/** Picks the right *EndDate helper by period type, matching periodStartOf. */
+export function periodEndDate(periodType: PeriodType, startDate: string): string {
+  if (periodType === "day") return dayEndDate(startDate);
+  if (periodType === "month") return monthEndDate(startDate);
+  return yearEndDate(startDate);
 }

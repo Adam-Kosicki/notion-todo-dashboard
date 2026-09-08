@@ -54,6 +54,7 @@ import "./organize.css";
 import { HistoryView } from "@/components/board/history-view";
 import { BulkActionBar } from "@/components/board/bulk-actions";
 import { FocusView } from "@/components/board/focus-view";
+import { PeriodProgress } from "@/components/board/period-progress";
 import { WeeklyProgress } from "@/components/board/weekly-progress";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
@@ -101,9 +102,10 @@ async function boardRequest(body?: unknown) {
   return payload;
 }
 
-/** Phase 3 slice 2: the new versioned command envelope (roadmap section 7), used for the
- * focus and week commands - see app/api/board/route.ts's POST handler. Returns the refreshed
- * focus/weekProgress bundle so callers can update state without a full board reload. */
+/** Phase 3 slice 2 (+ Today/Month/Year extension): the new versioned command envelope
+ * (roadmap section 7), used for the focus/week/period commands - see app/api/board/route.ts's
+ * POST handler. Returns the refreshed focus/weekProgress/todayProgress/monthProgress/
+ * yearProgress bundle so callers can update state without a full board reload. */
 async function commandRequest(action: string, payload: unknown) {
   const response = await fetch("/api/board", {
     method: "POST",
@@ -113,10 +115,19 @@ async function commandRequest(action: string, payload: unknown) {
   const body = await response.json() as {
     focus?: BoardPayload["focus"];
     weekProgress?: BoardPayload["weekProgress"];
+    todayProgress?: BoardPayload["todayProgress"];
+    monthProgress?: BoardPayload["monthProgress"];
+    yearProgress?: BoardPayload["yearProgress"];
     error?: string;
   };
   if (!response.ok) throw new Error(body.error || "That action failed.");
-  return body as { focus: BoardPayload["focus"]; weekProgress: BoardPayload["weekProgress"] };
+  return body as {
+    focus: BoardPayload["focus"];
+    weekProgress: BoardPayload["weekProgress"];
+    todayProgress: BoardPayload["todayProgress"];
+    monthProgress: BoardPayload["monthProgress"];
+    yearProgress: BoardPayload["yearProgress"];
+  };
 }
 
 function shortRelation(value: string | null) {
@@ -346,6 +357,48 @@ function DateQuickPopover({ item, onSave }: {
   );
 }
 
+/** Adam's feedback (docs/adr/local/time-horizon-quick-actions.md): Today/Week/Month/Year as
+ * one-click quick actions, but as a single popover rather than four more standalone toolbar
+ * pills - he's repeatedly flagged row-toolbar clutter (duplicate priority/list/complete
+ * controls, dead Active/Archive buttons removed earlier this phase). Active horizons show as
+ * small dots on the trigger itself, so membership is visible without opening it. */
+function PlanPopover({ isToday, isThisWeek, isThisMonth, isThisYear, onToggleToday, onToggleWeek, onToggleMonth, onToggleYear }: {
+  isToday?: boolean;
+  isThisWeek?: boolean;
+  isThisMonth?: boolean;
+  isThisYear?: boolean;
+  onToggleToday?: (committed: boolean) => void;
+  onToggleWeek?: (committed: boolean) => void;
+  onToggleMonth?: (committed: boolean) => void;
+  onToggleYear?: (committed: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rows: { label: string; active?: boolean; onToggle?: (committed: boolean) => void }[] = [
+    { label: "Today", active: isToday, onToggle: onToggleToday },
+    { label: "This week", active: isThisWeek, onToggle: onToggleWeek },
+    { label: "This month", active: isThisMonth, onToggle: onToggleMonth },
+    { label: "This year", active: isThisYear, onToggle: onToggleYear },
+  ];
+  const activeCount = rows.filter((row) => row.active).length;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" className={activeCount ? "plan-action is-active" : "plan-action"} onClick={(event) => event.stopPropagation()}>
+          <CalendarCheck />Plan{activeCount > 0 && <span className="plan-dots" aria-hidden="true">{rows.filter((row) => row.active).map((row) => <i key={row.label} />)}</span>}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="plan-popover" onClick={(event) => event.stopPropagation()}>
+        {rows.map((row) => (
+          <label key={row.label} className={row.onToggle ? "plan-row" : "plan-row is-disabled"}>
+            <input type="checkbox" checked={Boolean(row.active)} disabled={!row.onToggle} onChange={(event) => row.onToggle?.(event.currentTarget.checked)} />
+            {row.label}
+          </label>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function QuickEditor({ item, onSave }: {
   item: BoardItem;
   onSave: (id: string, changes: EditableChanges) => void;
@@ -377,7 +430,7 @@ function QuickEditor({ item, onSave }: {
   );
 }
 
-function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, selectable = false, selected = false, onToggleSelect, mergeCandidates, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, isFocused, isThisWeek, onToggleFocus, onToggleWeek }: {
+function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, selectable = false, selected = false, onToggleSelect, mergeCandidates, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, isFocused, isThisWeek, isToday, isThisMonth, isThisYear, onToggleFocus, onToggleWeek, onToggleToday, onToggleMonth, onToggleYear }: {
   item: GroupedItem;
   collections: string[];
   completed?: boolean;
@@ -401,8 +454,14 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
    * where they don't add value, without a mode flag threaded all the way down. */
   isFocused?: boolean;
   isThisWeek?: boolean;
+  isToday?: boolean;
+  isThisMonth?: boolean;
+  isThisYear?: boolean;
   onToggleFocus?: (id: string, focused: boolean) => void;
   onToggleWeek?: (id: string, committed: boolean) => void;
+  onToggleToday?: (id: string, committed: boolean) => void;
+  onToggleMonth?: (id: string, committed: boolean) => void;
+  onToggleYear?: (id: string, committed: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -484,10 +543,17 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
             <Star fill={isFocused ? "currentColor" : "none"} />{isFocused ? "In Focus" : "Focus"}
           </button>
         )}
-        {!done && onToggleWeek && (
-          <button type="button" className={isThisWeek ? "week-action is-active" : "week-action"} onClick={() => onToggleWeek(item.id, !isThisWeek)} aria-pressed={Boolean(isThisWeek)}>
-            <CalendarCheck />{isThisWeek ? "This week" : "Add to week"}
-          </button>
+        {!done && (onToggleWeek || onToggleToday || onToggleMonth || onToggleYear) && (
+          <PlanPopover
+            isToday={isToday}
+            isThisWeek={isThisWeek}
+            isThisMonth={isThisMonth}
+            isThisYear={isThisYear}
+            onToggleToday={onToggleToday && ((committed) => onToggleToday(item.id, committed))}
+            onToggleWeek={onToggleWeek && ((committed) => onToggleWeek(item.id, committed))}
+            onToggleMonth={onToggleMonth && ((committed) => onToggleMonth(item.id, committed))}
+            onToggleYear={onToggleYear && ((committed) => onToggleYear(item.id, committed))}
+          />
         )}
         {/* Adam's feedback: "Active" (bumped lastInteraction with no other change) removed - it
          * had no observable effect worth a dedicated button: updateItem() already sets
@@ -553,7 +619,7 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
   );
 }
 
-export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, onBulkSave, focusedIds, weekCommittedIds, onToggleFocus, onToggleWeek }: {
+export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, onBulkSave, focusedIds, weekCommittedIds, todayIds, monthIds, yearIds, onToggleFocus, onToggleWeek, onToggleToday, onToggleMonth, onToggleYear }: {
   title: string;
   note: string;
   items: GroupedItem[];
@@ -570,11 +636,17 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
   onDelete?: (id: string) => void;
   /** Optional: when provided, a "Select" toggle and bulk move/type/importance actions become available. Omit to keep a table read-only-for-selection (e.g. inside an expanded group). */
   onBulkSave?: (ids: string[], changes: EditableChanges) => Promise<{ applied: number; failed: number }>;
-  /** Phase 3 slice 2 (quick-actions follow-up): see TaskRow's doc comment - omit all four to hide the row-level Focus/week quick-toggle buttons entirely (used outside the Home page). */
+  /** Phase 3 slice 2 (quick-actions follow-up): see TaskRow's doc comment - omit all to hide the row-level Focus/Plan quick-toggle controls entirely (used outside the Home page). */
   focusedIds?: Set<string>;
   weekCommittedIds?: Set<string>;
+  todayIds?: Set<string>;
+  monthIds?: Set<string>;
+  yearIds?: Set<string>;
   onToggleFocus?: (id: string, focused: boolean) => void;
   onToggleWeek?: (id: string, committed: boolean) => void;
+  onToggleToday?: (id: string, committed: boolean) => void;
+  onToggleMonth?: (id: string, committed: boolean) => void;
+  onToggleYear?: (id: string, committed: boolean) => void;
 }) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -594,6 +666,18 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
         {(() => {
           const focusedCount = focusedIds ? items.filter((item) => focusedIds.has(item.id)).length : 0;
           return focusedCount > 0 && <span className="focus-count"><Star fill="currentColor" /> {focusedCount} focused</span>;
+        })()}
+        {(() => {
+          const todayCount = todayIds ? items.filter((item) => todayIds.has(item.id)).length : 0;
+          return todayCount > 0 && <span className="focus-count period-count">{todayCount} today</span>;
+        })()}
+        {(() => {
+          const monthCount = monthIds ? items.filter((item) => monthIds.has(item.id)).length : 0;
+          return monthCount > 0 && <span className="focus-count period-count">{monthCount} this month</span>;
+        })()}
+        {(() => {
+          const yearCount = yearIds ? items.filter((item) => yearIds.has(item.id)).length : 0;
+          return yearCount > 0 && <span className="focus-count period-count">{yearCount} this year</span>;
         })()}
         <span className="task-table-count">{items.length}</span>
         {onBulkSave && !!items.length && (
@@ -643,8 +727,14 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
             onToggleSelect={toggleSelect}
             isFocused={focusedIds?.has(item.id)}
             isThisWeek={weekCommittedIds?.has(item.id)}
+            isToday={todayIds?.has(item.id)}
+            isThisMonth={monthIds?.has(item.id)}
+            isThisYear={yearIds?.has(item.id)}
             onToggleFocus={onToggleFocus}
             onToggleWeek={onToggleWeek}
+            onToggleToday={onToggleToday}
+            onToggleMonth={onToggleMonth}
+            onToggleYear={onToggleYear}
           />
         ))}
         {!items.length && <div className="task-table-empty"><Check /><span>{empty}</span></div>}
@@ -844,7 +934,7 @@ const LIST_DRAG_TYPE = "application/x-burner-list-id";
 function CollectionsView({
   items, allItems, lists, visibility, onOpen, onSaveItem, onCreateList, onSaveList,
   onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem, onSaveVisibility, onBulkSave,
-  focusedIds, weekCommittedIds, onToggleFocus, onToggleWeek,
+  focusedIds, weekCommittedIds, todayIds, monthIds, yearIds, onToggleFocus, onToggleWeek, onToggleToday, onToggleMonth, onToggleYear,
 }: {
   items: BoardItem[];
   allItems: BoardItem[];
@@ -865,8 +955,14 @@ function CollectionsView({
   /** Phase 3 slice 2 (quick-actions follow-up): see TaskRow's doc comment. */
   focusedIds?: Set<string>;
   weekCommittedIds?: Set<string>;
+  todayIds?: Set<string>;
+  monthIds?: Set<string>;
+  yearIds?: Set<string>;
   onToggleFocus?: (id: string, focused: boolean) => void;
   onToggleWeek?: (id: string, committed: boolean) => void;
+  onToggleToday?: (id: string, committed: boolean) => void;
+  onToggleMonth?: (id: string, committed: boolean) => void;
+  onToggleYear?: (id: string, committed: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -903,6 +999,9 @@ function CollectionsView({
     // Adam's feedback: no way to see, at the list level, how many of a list's tasks are
     // currently in Focus - added alongside the existing open/shown/hidden counts.
     const focusedCount = focusedIds ? matches.filter(item => focusedIds.has(item.id)).length : 0;
+    const todayCount = todayIds ? matches.filter(item => todayIds.has(item.id)).length : 0;
+    const monthCount = monthIds ? matches.filter(item => monthIds.has(item.id)).length : 0;
+    const yearCount = yearIds ? matches.filter(item => yearIds.has(item.id)).length : 0;
     const isExpanded = expanded[list.id] ?? Boolean(list.pinned);
     const Icon = list.rule === "inbox" ? Inbox : collectionIcon(list.name);
     const index = siblings.findIndex(entry => entry.id === list.id);
@@ -953,6 +1052,9 @@ function CollectionsView({
             <span className="collection-icon"><Icon /></span>
             <span><h2>{list.name}</h2><p>{openCount} open · {matches.length} shown
               {focusedCount > 0 && <em className="focus-count"><Star fill="currentColor" /> {focusedCount} focused</em>}
+              {todayCount > 0 && <em className="focus-count period-count">{todayCount} today</em>}
+              {monthCount > 0 && <em className="focus-count period-count">{monthCount} this month</em>}
+              {yearCount > 0 && <em className="focus-count period-count">{yearCount} this year</em>}
               {(hiddenGoals > 0 || hiddenPurchases > 0) && <em className="hidden-count">
                 {hiddenGoals > 0 && ` · ${hiddenGoals} goal${hiddenGoals === 1 ? "" : "s"} hidden`}
                 {hiddenPurchases > 0 && ` · ${hiddenPurchases} purchase${hiddenPurchases === 1 ? "" : "s"} hidden`}
@@ -1002,7 +1104,9 @@ function CollectionsView({
               selectable={isSelecting} selected={selectedIds.has(item.id)} onToggleSelect={toggleSelect}
               mergeCandidates={rows.filter(candidate => candidate.id !== item.id)}
               isFocused={focusedIds?.has(item.id)} isThisWeek={weekCommittedIds?.has(item.id)}
-              onToggleFocus={onToggleFocus} onToggleWeek={onToggleWeek} />)}
+              isToday={todayIds?.has(item.id)} isThisMonth={monthIds?.has(item.id)} isThisYear={yearIds?.has(item.id)}
+              onToggleFocus={onToggleFocus} onToggleWeek={onToggleWeek}
+              onToggleToday={onToggleToday} onToggleMonth={onToggleMonth} onToggleYear={onToggleYear} />)}
             {!rows.length && <div className="subtable-empty">Drop a task here or choose this list from a task’s Move to list menu.</div>}
           </div>
         </>}
@@ -1661,13 +1765,52 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     if (committed) await commitToWeek(itemId); else await withdrawFromWeek(itemId);
   };
 
+  // Phase 3 extension (docs/adr/local/time-horizon-quick-actions.md): Today/Month/Year mirror
+  // week.commit/week.withdraw above exactly, via the generic period.commit/period.withdraw
+  // commands - one parameterized pair instead of three near-duplicate copies of
+  // commitToWeek/withdrawFromWeek/toggleWeekCommitment.
+  type PeriodKey = "today" | "month" | "year";
+  const PERIOD_TYPE_BY_KEY: Record<PeriodKey, "day" | "month" | "year"> = { today: "day", month: "month", year: "year" };
+  const PERIOD_PROGRESS_KEY: Record<PeriodKey, "todayProgress" | "monthProgress" | "yearProgress"> = { today: "todayProgress", month: "monthProgress", year: "yearProgress" };
+
+  const commitToPeriod = async (key: PeriodKey, itemId: string) => {
+    const progress = data?.[PERIOD_PROGRESS_KEY[key]];
+    if (demo || !progress) { toast.info("Exit the sample board to use planning periods."); return; }
+    try {
+      const result = await commandRequest("period.commit", { periodType: PERIOD_TYPE_BY_KEY[key], periodId: progress.periodId, itemId });
+      setData((current) => current ? { ...current, focus: result.focus, todayProgress: result.todayProgress, monthProgress: result.monthProgress, yearProgress: result.yearProgress } : current);
+    } catch (commitError) {
+      toast.error(commitError instanceof Error ? commitError.message : "Could not add that.");
+    }
+  };
+
+  const withdrawFromPeriod = async (key: PeriodKey, itemId: string, reason?: string) => {
+    const progress = data?.[PERIOD_PROGRESS_KEY[key]];
+    if (!progress) return;
+    try {
+      const result = await commandRequest("period.withdraw", { periodType: PERIOD_TYPE_BY_KEY[key], periodId: progress.periodId, itemId, reason: reason ?? null });
+      setData((current) => current ? { ...current, focus: result.focus, todayProgress: result.todayProgress, monthProgress: result.monthProgress, yearProgress: result.yearProgress } : current);
+    } catch (withdrawError) {
+      toast.error(withdrawError instanceof Error ? withdrawError.message : "Could not withdraw that.");
+    }
+  };
+
+  const togglePeriodCommitment = async (key: PeriodKey, itemId: string, committed: boolean) => {
+    if (committed) await commitToPeriod(key, itemId); else await withdrawFromPeriod(key, itemId);
+  };
+  const toggleToday = (itemId: string, committed: boolean) => togglePeriodCommitment("today", itemId, committed);
+  const toggleMonth = (itemId: string, committed: boolean) => togglePeriodCommitment("month", itemId, committed);
+  const toggleYear = (itemId: string, committed: boolean) => togglePeriodCommitment("year", itemId, committed);
+
   // Row-level quick actions (Home page only - see TaskRow's doc comment) need fast, per-item
   // lookups rather than re-scanning the arrays on every row render.
   const focusedIds = useMemo(() => new Set(data?.focus?.map((entry) => entry.itemId)), [data?.focus]);
-  const weekCommittedIds = useMemo(
-    () => new Set(data?.weekProgress?.commitments.filter((commitment) => !commitment.withdrawnAt).map((commitment) => commitment.itemId)),
-    [data?.weekProgress],
-  );
+  const activeIds = (progress: { commitments: { itemId: string; withdrawnAt: string | null }[] } | undefined) =>
+    new Set(progress?.commitments.filter((commitment) => !commitment.withdrawnAt).map((commitment) => commitment.itemId));
+  const weekCommittedIds = useMemo(() => activeIds(data?.weekProgress), [data?.weekProgress]);
+  const todayIds = useMemo(() => activeIds(data?.todayProgress), [data?.todayProgress]);
+  const monthIds = useMemo(() => activeIds(data?.monthProgress), [data?.monthProgress]);
+  const yearIds = useMemo(() => activeIds(data?.yearProgress), [data?.yearProgress]);
 
   const applyItemUpdates = (updated: BoardItem[]) => {
     setData((current) => current ? {
@@ -1839,7 +1982,9 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             <TaskTable title="Unfiled tasks" note="These tasks have no list. Move them into a list, or set any list’s Tasks shown setting to Unfiled tasks."
               items={filtered.filter(item => !item.collection && item.itemType !== "Event")} icon={Inbox} empty="No unfiled tasks"
               collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} onBulkSave={bulkSave}
-              focusedIds={focusedIds} weekCommittedIds={weekCommittedIds} onToggleFocus={(id, focused) => void toggleFocus(id, focused)} onToggleWeek={(id, committed) => void toggleWeekCommitment(id, committed)} />
+              focusedIds={focusedIds} weekCommittedIds={weekCommittedIds} todayIds={todayIds} monthIds={monthIds} yearIds={yearIds}
+              onToggleFocus={(id, focused) => void toggleFocus(id, focused)} onToggleWeek={(id, committed) => void toggleWeekCommitment(id, committed)}
+              onToggleToday={(id, committed) => void toggleToday(id, committed)} onToggleMonth={(id, committed) => void toggleMonth(id, committed)} onToggleYear={(id, committed) => void toggleYear(id, committed)} />
           )}
           <CollectionsView
             items={filtered.filter(item => item.itemType !== "Event")}
@@ -1860,8 +2005,14 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onBulkSave={bulkSave}
             focusedIds={focusedIds}
             weekCommittedIds={weekCommittedIds}
+            todayIds={todayIds}
+            monthIds={monthIds}
+            yearIds={yearIds}
             onToggleFocus={(id, focused) => void toggleFocus(id, focused)}
             onToggleWeek={(id, committed) => void toggleWeekCommitment(id, committed)}
+            onToggleToday={(id, committed) => void toggleToday(id, committed)}
+            onToggleMonth={(id, committed) => void toggleMonth(id, committed)}
+            onToggleYear={(id, committed) => void toggleYear(id, committed)}
           />
           {!widgetTop && <UpcomingWidget items={openItems} position="bottom" onOpen={(item) => setSelectedId(item.id)} onMove={() => setWidgetTop(true)} />}
         </section>
@@ -1926,11 +2077,14 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         <section className="dashboard-wrap single-table-wrap flex flex-col gap-4">
           {data.weekProgress && data.focus ? (
             <>
-              <WeeklyProgress weekProgress={data.weekProgress} items={openItems} onCommit={commitToWeek} onWithdraw={withdrawFromWeek} onClose={closeWeek} />
               <FocusView focusItems={data.focus} items={openItems} onToggleFocus={toggleFocus} />
+              {data.todayProgress && <PeriodProgress title="Today" periodProgress={data.todayProgress} items={openItems} onCommit={(id) => commitToPeriod("today", id)} onWithdraw={(id) => withdrawFromPeriod("today", id)} />}
+              <WeeklyProgress weekProgress={data.weekProgress} items={openItems} onCommit={commitToWeek} onWithdraw={withdrawFromWeek} onClose={closeWeek} />
+              {data.monthProgress && <PeriodProgress title="This month" periodProgress={data.monthProgress} items={openItems} onCommit={(id) => commitToPeriod("month", id)} onWithdraw={(id) => withdrawFromPeriod("month", id)} />}
+              {data.yearProgress && <PeriodProgress title="This year" periodProgress={data.yearProgress} items={openItems} onCommit={(id) => commitToPeriod("year", id)} onWithdraw={(id) => withdrawFromPeriod("year", id)} />}
             </>
           ) : (
-            <p className="text-sm text-muted-foreground">Focus and weekly progress aren&apos;t available in the sample board.</p>
+            <p className="text-sm text-muted-foreground">Focus and planning progress aren&apos;t available in the sample board.</p>
           )}
         </section>
       ) : (
