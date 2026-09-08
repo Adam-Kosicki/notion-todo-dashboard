@@ -29,7 +29,6 @@ import {
   Search,
   Settings2,
   ShoppingCart,
-  Sparkles,
   Star,
   Target,
   Trash2,
@@ -450,7 +449,11 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
             onChange={() => onToggleSelect?.(item.id)}
           />
         )}
-        <button aria-label={done ? `Reopen ${item.title}` : `Complete ${item.title}`} className="check-button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })} type="button">{done ? <CheckCircle2 /> : <span />}</button>
+        {/* Adam's feedback: Focus had no persistent, always-visible indicator on the row itself -
+         * only the hover-only toolbar button changed text. A focused-and-not-done item now shows
+         * a star here instead of the plain empty circle, so it stands out in the list at a
+         * glance without needing to hover. */}
+        <button aria-label={done ? `Reopen ${item.title}` : `Complete ${item.title}`} className={isFocused && !done ? "check-button is-focus-star" : "check-button"} onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })} type="button">{done ? <CheckCircle2 /> : isFocused ? <Star /> : <span />}</button>
         <GripVertical className="dashboard-drag" aria-hidden="true" />
         <button className="dashboard-title" onClick={() => isGroup ? setExpanded((open) => !open) : onOpen(item)} type="button">
           <strong>{item.title}{isGroup && <em className="group-badge"><ChevronRight className={expanded ? "group-chevron open" : "group-chevron"} />{members!.length} tasks</em>}</strong>
@@ -486,7 +489,10 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
             <CalendarCheck />{isThisWeek ? "This week" : "Add to week"}
           </button>
         )}
-        <button type="button" onClick={() => onSave(item.id, { lastInteraction: new Date().toISOString() })}><Sparkles />Active</button>
+        {/* Adam's feedback: "Active" (bumped lastInteraction with no other change) removed - it
+         * had no observable effect worth a dedicated button: updateItem() already sets
+         * lastInteraction on every single edit that doesn't explicitly override it, so this
+         * button never did anything a normal edit wasn't already doing. */}
         <DateQuickPopover item={item} onSave={onSave} />
         <label className="move-list-control">
           <span className="sr-only">Move {item.title} to list</span>
@@ -510,7 +516,10 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
         ) : isGroup && onDisbandGroup ? (
           <button type="button" onClick={() => onDisbandGroup(item.id)}><Ungroup />Disband</button>
         ) : null}
-        <button type="button" className="archive-action" onClick={() => onSave(item.id, { status: "Archived" })}><Archive />Archive</button>
+        {/* Adam's feedback: "Archive" as a quick-toolbar button removed - not a control he found
+         * useful for a quick row action. Archiving stays reachable through the full editor's
+         * Status field (EditorSheet already lists "Archived" in STATUSES); nothing about the
+         * Archived status itself, or History's separate Archived filter, changed. */}
         {onDelete && (confirmDelete ? (
           <span className="delete-confirm-inline">
             <span>Delete for good?</span>
@@ -582,6 +591,10 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
       <header className="task-table-head">
         <span className="task-table-icon"><Icon /></span>
         <span><h2>{title}</h2><p>{note}</p></span>
+        {(() => {
+          const focusedCount = focusedIds ? items.filter((item) => focusedIds.has(item.id)).length : 0;
+          return focusedCount > 0 && <span className="focus-count"><Star fill="currentColor" /> {focusedCount} focused</span>;
+        })()}
         <span className="task-table-count">{items.length}</span>
         {onBulkSave && !!items.length && (
           selectionMode ? (
@@ -887,6 +900,9 @@ function CollectionsView({
     const rows = collapseGroups(matches).sort((a, b) => compareListItems(a, b, list.itemSort, effectiveAttention));
     const assignedCount = allItems.filter(item => item.collection === list.name).length;
     const openCount = matches.filter(item => !["Done", "Archived"].includes(item.status)).length;
+    // Adam's feedback: no way to see, at the list level, how many of a list's tasks are
+    // currently in Focus - added alongside the existing open/shown/hidden counts.
+    const focusedCount = focusedIds ? matches.filter(item => focusedIds.has(item.id)).length : 0;
     const isExpanded = expanded[list.id] ?? Boolean(list.pinned);
     const Icon = list.rule === "inbox" ? Inbox : collectionIcon(list.name);
     const index = siblings.findIndex(entry => entry.id === list.id);
@@ -936,6 +952,7 @@ function CollectionsView({
             onClick={() => setExpanded(current => ({ ...current, [list.id]: !isExpanded }))}>
             <span className="collection-icon"><Icon /></span>
             <span><h2>{list.name}</h2><p>{openCount} open · {matches.length} shown
+              {focusedCount > 0 && <em className="focus-count"><Star fill="currentColor" /> {focusedCount} focused</em>}
               {(hiddenGoals > 0 || hiddenPurchases > 0) && <em className="hidden-count">
                 {hiddenGoals > 0 && ` · ${hiddenGoals} goal${hiddenGoals === 1 ? "" : "s"} hidden`}
                 {hiddenPurchases > 0 && ` · ${hiddenPurchases} purchase${hiddenPurchases === 1 ? "" : "s"} hidden`}
@@ -1138,9 +1155,6 @@ function EditorSheet({
                   if (value !== (item.originalNotes || "")) void save({ originalNotes: value || null });
                 }}
               />
-              <div className="editor-actions">
-                <button type="button" className="touch-button" onClick={() => void save({ lastInteraction: new Date().toISOString() })}><Sparkles />Mark active now</button>
-              </div>
             </section>
 
             <Collapsible open={moreOpen} onOpenChange={setMoreOpen}>

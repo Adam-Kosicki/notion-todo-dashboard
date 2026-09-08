@@ -1364,6 +1364,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 }
 .tri-toggle button.selected { border-color: #58a0f8; background: rgba(88, 160, 248, 0.14); color: #fff; }
 .hidden-count { color: #f0b429; font-style: normal; font-weight: 700; }
+.focus-count { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; color: #f0b429; font-style: normal; font-weight: 700; }
+.focus-count svg { width: 10px; height: 10px; }
 .list-delete-trigger {
   display: inline-flex;
   align-items: center;
@@ -1542,6 +1544,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="combob
 }
 .check-button:hover > span { border-color: #61d5a6; }
 .check-button svg { width: 17px; }
+.check-button.is-focus-star { color: #f0b429; }
+.check-button.is-focus-star:hover { color: #f5c451; }
 .collection-title {
   display: flex;
   min-width: 0;
