@@ -1,0 +1,87 @@
+[
+    {
+        "source":  "Backburner/README.md",
+        "sha256":  "9558A29FAA5163A4EFF0BB55F5B233ED9CD04E0F942754249DAAE86F545BBDF8",
+        "archived":  "source/README.md"
+    },
+    {
+        "source":  "Backburner/CONTEXT.md",
+        "sha256":  "5D40A1FD615691D27A9EEFAFB1F44E44AB11468CA922EAA795017AC4DE546698",
+        "archived":  "source/CONTEXT.md"
+    },
+    {
+        "source":  "Backburner/docs/ARCHITECTURE.md",
+        "sha256":  "2D7A4E83E764A7311DDCB6DD2B03CB2CB9EE1645D061226AA50FB59737AB8BAD",
+        "archived":  "source/docs/ARCHITECTURE.md"
+    },
+    {
+        "source":  "Backburner/docs/ROADMAP.md",
+        "sha256":  "5E63578701B4A4AA36CE8DFEF9D451FB4F204DD377FDE8010419C4CA9E60DDA1",
+        "archived":  "source/docs/ROADMAP.md"
+    },
+    {
+        "source":  "Backburner/docs/COMPETITIVE-ANALYSIS.md",
+        "sha256":  "FB00ED00DC971E6599E4D52A193C97FE4DAA90A248907EA60F662134CEC75A4D",
+        "archived":  "source/docs/COMPETITIVE-ANALYSIS.md"
+    },
+    {
+        "source":  "Backburner/docs/human/features.md",
+        "sha256":  "A7D8C7CA48332E8124D999CD0F901DA53E3494CF8102A2F2DF4BD1AE5E1D4EC1",
+        "archived":  "source/docs/human/features.md"
+    },
+    {
+        "source":  "Backburner/specs/capture-pipeline.md",
+        "sha256":  "6239482ED8D14BAE3ED0F1E9542071C7AA0E1B69A88D5CC88FE8F1E7C828E9EA",
+        "archived":  "source/specs/capture-pipeline.md"
+    },
+    {
+        "source":  "Backburner/specs/goal-decomposition.md",
+        "sha256":  "196ACF2B31627CEE30B4C6973851B48DFA74FCF205A84C19B04EA87492455AD1",
+        "archived":  "source/specs/goal-decomposition.md"
+    },
+    {
+        "source":  "Backburner/specs/attention-engine.md",
+        "sha256":  "0012A1D175D96395A2A4033EEEA3A5E2AB53D834010A979243C10D50DC53CEBA",
+        "archived":  "source/specs/attention-engine.md"
+    },
+    {
+        "source":  "Backburner/specs/nudge-engine.md",
+        "sha256":  "CB9201E3ABDD71F7797A7A1A848E0965CAF531C35D298A1122C7178A6618F290",
+        "archived":  "source/specs/nudge-engine.md"
+    },
+    {
+        "source":  "Backburner/specs/evaluations.md",
+        "sha256":  "C8B6BF1DDF299EE7B25DDE3A00D49711A494130C67B537BBFB1CEE57DF294264",
+        "archived":  "source/specs/evaluations.md"
+    },
+    {
+        "source":  "Backburner/specs/suggestion-box.md",
+        "sha256":  "329FEDE6E7FB22F424B64812F6902059771AB8C0BA15FE31E2064EC6B33D4A0C",
+        "archived":  "source/specs/suggestion-box.md"
+    },
+    {
+        "source":  "Backburner/specs/adapters-super-productivity.md",
+        "sha256":  "665E3BF2C2D05B83AB909CFE3BA5AFF595C3928B01CD11C2EC12962EB99DC1F2",
+        "archived":  "source/specs/adapters-super-productivity.md"
+    },
+    {
+        "source":  "Backburner/docs/adr/0001-initial-architecture.md",
+        "sha256":  "0AD35637DE17EEBB24069044D28F24AF7C764974D3F7E02F4EF75A4C7F408FD2",
+        "archived":  "source/docs/adr/0001-initial-architecture.md"
+    },
+    {
+        "source":  "Backburner/docs/adr/0002-task-vs-goal-model.md",
+        "sha256":  "42DDFEC672F7FEC928DE90391585BC87099C2B94658509DC87C7DBC0578EE317",
+        "archived":  "source/docs/adr/0002-task-vs-goal-model.md"
+    },
+    {
+        "source":  "Backburner/docs/adr/0003-structured-llm-and-evals.md",
+        "sha256":  "2CC43B6E5ABE19DD88D5909AD81F707F5A987260336EDACABC5944204239D5B3",
+        "archived":  "source/docs/adr/0003-structured-llm-and-evals.md"
+    },
+    {
+        "source":  "Backburner/docs/adr/0004-nudge-engine-idempotency.md",
+        "sha256":  "1171895F5FCDC57F223D354591897B28BF0CA6E411F59EFB6C23318AF2DD1398",
+        "archived":  "source/docs/adr/0004-nudge-engine-idempotency.md"
+    }
+]
