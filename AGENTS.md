@@ -20,6 +20,18 @@ Existing development data is real personal data.
 - Do not deploy, migrate production data, delete personal data, or enable paid/external
   services without explicit authorization for that action.
 
+## Architecture and implementation workflow
+
+Claude Sonnet implements authorized work in substantial, coherent batches through a phase's
+acceptance criteria. Astra owns architecture guidance, prioritization, and batch review; it
+writes implementation instructions rather than application code unless Adam asks otherwise.
+When Astra is active, delegate bounded evidence gathering to a lower-cost worker, then use the
+handoff, aggregate diff, and relevant roadmap requirements to decide direction. Review at batch
+or phase boundaries and material decision gates, without requiring approval after each commit.
+Keep decisions and verification evidence in durable handoffs. Invoke broad review/audit skills
+only when Adam explicitly requests them. For the current Phase 3 completion batch, read
+`docs/plans/phase-3-completion-batch.md` alongside the roadmap.
+
 ## Git
 
 - Split commits by coherent feature or implementation slice when practical.
