@@ -347,12 +347,11 @@ function DateQuickPopover({ item, onSave }: {
   );
 }
 
-function QuickEditor({ item, collections, onSave }: {
+function QuickEditor({ item, onSave }: {
   item: BoardItem;
-  collections: string[];
   onSave: (id: string, changes: EditableChanges) => void;
 }) {
-  const commitText = (key: "title" | "originalNotes" | "collection", value: string) => {
+  const commitText = (key: "title" | "originalNotes", value: string) => {
     const next = value.trim();
     const current = key === "title" ? item.title : item[key] || "";
     if (next !== current && (key !== "title" || next)) onSave(item.id, { [key]: next || null });
@@ -364,7 +363,9 @@ function QuickEditor({ item, collections, onSave }: {
         <label className="quick-field quick-title-field"><span>Name</span><input key={`${item.updatedAt}:title`} defaultValue={item.title} onBlur={(event) => commitText("title", event.currentTarget.value)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>
         <label className="quick-field"><span>Due date</span><input key={`${item.updatedAt}:due`} type="date" defaultValue={inputDate(item.due)} onChange={(event) => onSave(item.id, { due: event.currentTarget.value || null, dateMode: event.currentTarget.value ? "date_set" : "unspecified" })} /></label>
         <label className="quick-field"><span>Date rule</span><select value={dateMode} onChange={(event) => onSave(item.id, { dateMode: event.currentTarget.value, ...(event.currentTarget.value === "no_date" ? { due: null, scheduledFor: null } : {}) })}>{DATE_MODES.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></label>
-        <label className="quick-field"><span>List</span><input key={`${item.updatedAt}:collection`} list={`collections-${item.id}`} defaultValue={item.collection || ""} placeholder="No list" onBlur={(event) => commitText("collection", event.currentTarget.value)} /><datalist id={`collections-${item.id}`}>{collections.map((collection) => <option key={collection} value={collection} />)}</datalist></label>
+        {/* Adam's feedback: this used to also have a free-text "List" field here (with a
+         * datalist autocomplete), duplicating the row's own "Move to list..." dropdown - removed,
+         * that dropdown is the one functional path to change a task's list from the row now. */}
         <label className="quick-field"><span>Type</span><select value={item.itemType} onChange={(event) => onSave(item.id, { itemType: event.currentTarget.value, ...(!usesPriority(event.currentTarget.value) ? { priority: 0 } : {}) })}>{ITEM_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
         <label className="quick-field quick-details-field"><span>Details</span><input key={`${item.updatedAt}:notes`} defaultValue={item.originalNotes || ""} placeholder="Add a short note" onBlur={(event) => commitText("originalNotes", event.currentTarget.value)} /></label>
         {(item.itemType === "Reminder" || item.itemType === "Event") && <>
@@ -457,14 +458,18 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
         </button>
         <span className={date?.includes("overdue") ? "dashboard-due overdue" : "dashboard-due"}>{date || "—"}</span>
         <span className="heat-score" title={`Combined urgency ${Math.round(attentionHeat(item))}`}><i />{attention}</span>
-        {showPriority && usesPriority(item.itemType) ? <>
-          <span className={item.priority === null ? "row-score unrated" : item.priority === 0 ? "row-score zero" : "row-score"}>{item.priority === null ? "—" : item.priority}</span>
-          <PriorityControl compact item={item} key={`${item.id}:${item.priority ?? "unrated"}:dashboard`} onChange={(priority) => onSave(item.id, { priority })} />
-        </> : <span className="non-priority-type">{item.itemType}</span>}
+        {showPriority && usesPriority(item.itemType) ? (
+          // Adam's feedback: this used to also render a compact <PriorityControl> slider here,
+          // duplicating the one in QuickEditor below (visible on the same hover/expand) - one
+          // slider per item now; this badge is just an at-a-glance readout, not an editor.
+          <span className={item.priority === null ? "row-score unrated" : item.priority === 0 ? "row-score zero" : "row-score"} title="Importance - edit below">{item.priority === null ? "—" : item.priority}</span>
+        ) : <span className="non-priority-type">{item.itemType}</span>}
         <button className="row-open" onClick={() => onOpen(item)} type="button" aria-label={`Open all details for ${item.title}`}><ChevronRight /></button>
       </div>
       <div className="quick-toolbar" aria-label={`Quick actions for ${item.title}`}>
-        <button type="button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })}><CheckCircle2 />{done ? "Reopen" : "Done"}</button>
+        {/* Adam's feedback: this used to also have a "Done"/"Reopen" button here, doing the
+         * exact same thing as the always-visible check-button to the left of the title -
+         * removed, one complete/reopen control per row now. */}
         {!done && onToggleFocus && (
           <button type="button" className={isFocused ? "focus-action is-active" : "focus-action"} onClick={() => onToggleFocus(item.id, !isFocused)} aria-pressed={Boolean(isFocused)}>
             <Star fill={isFocused ? "currentColor" : "none"} />{isFocused ? "In Focus" : "Focus"}
@@ -510,7 +515,7 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
           <button type="button" className="delete-action" onClick={() => setConfirmDelete(true)}><Trash2 />Delete</button>
         ))}
       </div>
-      {!isGroup && <QuickEditor item={item} collections={collections} onSave={onSave} />}
+      {!isGroup && <QuickEditor item={item} onSave={onSave} />}
       {isGroup && expanded && (
         <div className="group-members">
           {members!.map((member) => (
