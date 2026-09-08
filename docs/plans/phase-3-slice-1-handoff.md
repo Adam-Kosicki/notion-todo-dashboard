@@ -1,27 +1,29 @@
 # Phase 3 slice 1 handoff (for Astra re-review)
 
-Status: Phase 3 slice 1 (`c02e352`) plus two blocker-remediation rounds (`7060176`, `fc8a2a3`),
-all on `claude-dev`. Astra's first review of `89e5ef1..c02e352` returned **BLOCK - FIX BEFORE
-SLICE 2** (three blockers + one roadmap gap, addressed in `7060176`); Astra's second review of
-`7060176^..1698bc8` returned **NOT READY** (three P1 persistence findings + one re-add regression
-left over from round 1, addressed in `fc8a2a3`). **Phase 3 slice 2 has not started** - no slice-2
-files exist, no UI wiring has begun. This doc exists so Astra can re-review from the repository
-rather than this session's chat history, per `AGENTS.md`'s Astra/Claude handoff protocol. See
-"Round 2" below for the second remediation; everything above it is unchanged from round 1's
-original handoff.
+Status: Phase 3 slice 1 (`c02e352`) plus three blocker-remediation rounds (`7060176`, `fc8a2a3`,
+`e578dd5`), all on `claude-dev`. Astra's first review of `89e5ef1..c02e352` returned **BLOCK - FIX
+BEFORE SLICE 2** (three blockers + one roadmap gap, addressed in `7060176`); Astra's second review
+of `7060176^..1698bc8` returned **NOT READY** (three P1 persistence findings + one re-add
+regression left over from round 1, addressed in `fc8a2a3`); Astra's third review of
+`7060176^..fc8a2a3` confirmed those three P1 fixes and the re-add fix, but found one new
+regression introduced by round 2 itself (commit/withdraw history mixed across weeks), addressed in
+`e578dd5`. **Phase 3 slice 2 has not started** - no slice-2 files exist, no UI wiring has begun.
+This doc exists so Astra can re-review from the repository rather than this session's chat
+history, per `AGENTS.md`'s Astra/Claude handoff protocol. See "Round 2" and "Round 3" below for
+the second and third remediations; everything above them is unchanged from round 1's original
+handoff.
 
-Current commit: **`fc8a2a34a7b509c9e972b0809e93031faede7c42`** (`fc8a2a3` short), branch
+Current commit: **`e578dd5d0346dcc81e33d056b065b2138d43aeec`** (`e578dd5` short), branch
 `claude-dev`. Working tree clean except pre-existing untracked `.agents/`, `.claude/skills/`,
 `skills-lock.json` (not part of this work, not modified by it). **Not yet pushed to
 `origin/claude-dev` as of writing this section** - push before sending to Astra.
 
-**Standards note carried over from Astra's second review, not yet resolved:** both round-1
+**Standards note from Astra's second review - resolved, no code/history change:** both round-1
 commits (`7060176`, `1698bc8`) include a `Claude-Session:` URL, which `AGENTS.md` explicitly
-forbids in public commit messages for this repo ("Do not include private AI-session URLs or
-session identifiers in public commit messages"). This came from a session-level default that
-conflicts with that repo rule. Round 2's commit (`fc8a2a3`) omits it, but the two prior commits
-are unchanged - rewriting already-pushed history is a destructive operation this session did not
-take without the owner's explicit authorization. Left for the owner to decide.
+forbids in public commit messages for this repo. That came from a session-level default
+conflicting with the repo rule; every commit from `fc8a2a3` onward omits it. The owner was asked
+whether to rewrite the already-pushed history to strip it from those two commits and declined -
+left as-is intentionally, not an oversight.
 
 ## Astra's blockers, confirmed against the code
 
@@ -351,10 +353,90 @@ applies unchanged: `items.*`/`lists.*` non-atomicity remains deliberately out of
 (unreached by any real owner); legacy hard-delete-vs-Focus/commitment dangling references remain
 a Phase 1/4 cutover concern; `week.close`'s mutual exclusion has no lock timeout/expiry.
 
+## Round 3: Astra's third review (`7060176^..fc8a2a3`), one new regression confirmed and fixed
+
+Astra's third review scoped specifically to round 2's changes (per the refresh note - "keep this
+to the previous findings and any material regression introduced by their fixes") confirmed the
+three P1 fixes and the original re-add example, and found one new regression introduced by round
+2's own fix, not present before it.
+
+### Finding confirmed
+
+**P1 - commitment history mixed across weeks** (`commands.ts:529`). Confirmed: round 2's
+`listActivityEventsForItems(db, ownerId, itemIds, [...])` call in `weekClosePlan` filters by item
+ID and event type only - it has no way to restrict results to one specific planning week. Since
+`week_commitments`' primary key is `(owner_id, week_id, item_id)`, the same item can be (and
+routinely will be) committed to multiple different weeks independently, and every one of those
+commit/withdraw events shares the same `entity_id` (the item ID) in `activity_events`. Compounding
+this, `weekWithdrawPlan`'s activity event never recorded which week it belonged to at all -
+`weekCommitPlan`'s did (`after: { weekId }`), but `weekWithdrawPlan`'s only had `after: { reason }`.
+
+Reproduced exactly as Astra described: commit an item to this week AND next week, withdraw it from
+next week only, complete it within this week's window, close this week - the frozen report showed
+0/1 instead of 1/1. Mechanism: `computeWeekStats`'s `isActive` replay (added in round 2) merged
+*all* of the item's commit/withdraw events regardless of which week they belonged to into one
+timeline, so the untagged withdrawal (intended for next week) flipped `isActive` to false for this
+week's evaluation too, even though this week's own commitment was never withdrawn. Verified the
+fix actually closes the gap - not just that the new test happens to pass - by reverting the fix
+(`git stash push -- lib/server/commands.ts`) and rerunning the new regression test, which failed
+exactly as expected (`0 !== 1`) before the fix was restored.
+
+### Exact fix made
+
+No schema change was needed - the week identity was already available, just not recorded/used
+correctly:
+
+- `lib/server/commands.ts`'s `weekWithdrawPlan`: its activity event's `after` payload now includes
+  `weekId`, matching what `weekCommitPlan`'s already did.
+- `lib/server/repository.ts`: `ActivityEventRow` and `listActivityEventsForItems` now also return
+  `after_json`, so callers can recover which week a commit/withdraw event belongs to.
+- `lib/server/commands.ts`'s `weekClosePlan`: the `commitmentEvents` filter now also parses each
+  event's `after_json` and keeps only those whose `weekId` matches the week actually being closed,
+  before handing them to `computeWeekStats`. `statusEvents` (items.complete/items.reopen) are
+  unaffected - those aren't per-week, they belong to the item regardless of which week it's
+  committed to.
+
+### Files / symbols changed (round 3)
+
+| File | Symbols |
+| --- | --- |
+| `lib/server/commands.ts` | `weekWithdrawPlan`'s activity `after` payload gained `weekId`; `weekClosePlan`'s `commitmentEvents` filter now parses `after_json` and scopes by `weekId` |
+| `lib/server/repository.ts` | `ActivityEventRow` gained `after_json`; `listActivityEventsForItems`'s SELECT now returns it |
+| `tests/focus-week-commands.test.mjs` | +1 test: Astra's exact two-week reproduction (commit to week 1 and week 2, withdraw from week 2 only, complete within week 1, close week 1 expects 1/1) |
+
+### Migrations affected
+
+**None** - same as rounds 1 and 2. The week identity was already stored in the existing
+`activity_events.after_json` column; this only changes how it's queried and filtered.
+
+### Focused verification (round 3)
+
+```
+node --test tests/focus-week-commands.test.mjs
+  -> 16/16 pass (was 15; +1 two-week scoping regression)
+
+Regression-test validity check: reverted lib/server/commands.ts only (git stash), reran the new
+test - failed with "0 !== 1" exactly as expected, confirming the test genuinely exercises the bug
+before the fix, not just after it.
+```
+
+### Full-suite / typecheck / lint (round 3)
+
+```
+npm run typecheck   -> clean, no output
+npm run lint         -> same pre-existing app/board-app.tsx issues as prior rounds, unchanged
+npm test             -> 83 tests, 81 pass, 2 fail - the same pre-existing, unrelated dev-server
+                        port collision as every prior round
+```
+
+### Remaining risks (unchanged from round 1/2, still applicable)
+
+Everything in round 1's "Remaining risks" and "Intentionally deferred" sections still applies
+unchanged. No new risk was introduced by this round's fix beyond what's already documented.
+
 ## Exact next unblocked action
 
-Push `fc8a2a3` to `origin/claude-dev`, then send `fc8a2a34a7b509c9e972b0809e93031faede7c42` (or
-the range `7060176^..fc8a2a3` to cover both remediation rounds) to Astra for re-review, along with
-the Claude-Session-URL Standards question above for the owner to decide. **Phase 3 slice 2
-(Focus/weekly-progress UI, roadmap section 8) has not been started** - no slice-2 files exist, no
-`app/board-app.tsx` wiring has begun - pending that re-review's outcome.
+Push `e578dd5` to `origin/claude-dev`, then send `e578dd5d0346dcc81e33d056b065b2138d43aeec` (or
+the range `7060176^..e578dd5` to cover all three remediation rounds) to Astra for re-review.
+**Phase 3 slice 2 (Focus/weekly-progress UI, roadmap section 8) has not been started** - no
+slice-2 files exist, no `app/board-app.tsx` wiring has begun - pending that re-review's outcome.
