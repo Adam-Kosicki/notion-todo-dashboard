@@ -51,10 +51,14 @@ export function PeriodProgress({
     }
   };
 
-  const withdraw = async (itemId: string) => {
+  // Same optional-reason-as-explicit-deferral shape as weekly-progress.tsx's withdraw - see that
+  // file's comment for the null/empty-string prompt-result distinction.
+  const withdraw = async (itemId: string, itemTitle: string) => {
+    const reason = window.prompt(`Optional: why withdraw "${itemTitle}" from ${title.toLowerCase()}? Leave blank to skip.`);
+    if (reason === null) return;
     setBusyItemId(itemId);
     try {
-      await onWithdraw(itemId);
+      await onWithdraw(itemId, reason.trim() || undefined);
     } finally {
       setBusyItemId(null);
     }
@@ -101,14 +105,18 @@ export function PeriodProgress({
                   type="button"
                   className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                   disabled={busyItemId === commitment.itemId}
-                  onClick={() => void withdraw(commitment.itemId)}
+                  onClick={() => void withdraw(commitment.itemId, commitment.title)}
                   aria-label={`Withdraw ${commitment.title} from ${title}`}
                   title={`Withdraw from ${title}`}
                 >
                   <X className="size-4" />
                 </button>
               )}
-              {withdrawn && <span className="shrink-0 text-xs text-muted-foreground">withdrawn</span>}
+              {withdrawn && (
+                <span className="shrink-0 truncate text-xs text-muted-foreground" title={commitment.withdrawalReason ?? undefined}>
+                  {commitment.withdrawalReason ? `Deferred: ${commitment.withdrawalReason}` : "Withdrawn"}
+                </span>
+              )}
             </li>
           );
         })}
