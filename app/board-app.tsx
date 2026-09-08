@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   BellRing,
   BookOpen,
+  CalendarCheck,
   CalendarClock,
   CalendarDays,
   CalendarPlus,
@@ -376,7 +377,7 @@ function QuickEditor({ item, collections, onSave }: {
   );
 }
 
-function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, selectable = false, selected = false, onToggleSelect, mergeCandidates, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete }: {
+function TaskRow({ item, collections, completed = false, showPriority = true, groupMemberOf, selectable = false, selected = false, onToggleSelect, mergeCandidates, onOpen, onSave, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, isFocused, isThisWeek, onToggleFocus, onToggleWeek }: {
   item: GroupedItem;
   collections: string[];
   completed?: boolean;
@@ -393,6 +394,15 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
   onUnlinkItem?: (id: string) => void;
   onDisbandGroup?: (anchorId: string) => void;
   onDelete?: (id: string) => void;
+  /** Phase 3 slice 2 (quick-actions follow-up): the main workflow for Focus/weekly commitment is
+   * these row-level toggles, not the Focus tab's own add-dropdowns (which stay as a secondary,
+   * see-everything view). Omit both isFocused/onToggleFocus (or isThisWeek/onToggleWeek) to hide
+   * the corresponding button entirely - used to keep these off Calendar/Goals/Reminders/History,
+   * where they don't add value, without a mode flag threaded all the way down. */
+  isFocused?: boolean;
+  isThisWeek?: boolean;
+  onToggleFocus?: (id: string, focused: boolean) => void;
+  onToggleWeek?: (id: string, committed: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -455,6 +465,16 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
       </div>
       <div className="quick-toolbar" aria-label={`Quick actions for ${item.title}`}>
         <button type="button" onClick={() => onSave(item.id, { status: done ? "Not started" : "Done" })}><CheckCircle2 />{done ? "Reopen" : "Done"}</button>
+        {!done && onToggleFocus && (
+          <button type="button" className={isFocused ? "focus-action is-active" : "focus-action"} onClick={() => onToggleFocus(item.id, !isFocused)} aria-pressed={Boolean(isFocused)}>
+            <Star fill={isFocused ? "currentColor" : "none"} />{isFocused ? "In Focus" : "Focus"}
+          </button>
+        )}
+        {!done && onToggleWeek && (
+          <button type="button" className={isThisWeek ? "week-action is-active" : "week-action"} onClick={() => onToggleWeek(item.id, !isThisWeek)} aria-pressed={Boolean(isThisWeek)}>
+            <CalendarCheck />{isThisWeek ? "This week" : "Add to week"}
+          </button>
+        )}
         <button type="button" onClick={() => onSave(item.id, { lastInteraction: new Date().toISOString() })}><Sparkles />Active</button>
         <DateQuickPopover item={item} onSave={onSave} />
         <label className="move-list-control">
@@ -513,7 +533,7 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
   );
 }
 
-export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, onBulkSave }: {
+export function TaskTable({ title, note, items, icon: Icon, empty, collections, completed = false, onOpen, onSave, onDrop, onMergeInto, onUnlinkItem, onDisbandGroup, onDelete, onBulkSave, focusedIds, weekCommittedIds, onToggleFocus, onToggleWeek }: {
   title: string;
   note: string;
   items: GroupedItem[];
@@ -530,6 +550,11 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
   onDelete?: (id: string) => void;
   /** Optional: when provided, a "Select" toggle and bulk move/type/importance actions become available. Omit to keep a table read-only-for-selection (e.g. inside an expanded group). */
   onBulkSave?: (ids: string[], changes: EditableChanges) => Promise<{ applied: number; failed: number }>;
+  /** Phase 3 slice 2 (quick-actions follow-up): see TaskRow's doc comment - omit all four to hide the row-level Focus/week quick-toggle buttons entirely (used outside the Home page). */
+  focusedIds?: Set<string>;
+  weekCommittedIds?: Set<string>;
+  onToggleFocus?: (id: string, focused: boolean) => void;
+  onToggleWeek?: (id: string, committed: boolean) => void;
 }) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -592,6 +617,10 @@ export function TaskTable({ title, note, items, icon: Icon, empty, collections, 
             selectable={selectionMode}
             selected={selectedIds.has(item.id)}
             onToggleSelect={toggleSelect}
+            isFocused={focusedIds?.has(item.id)}
+            isThisWeek={weekCommittedIds?.has(item.id)}
+            onToggleFocus={onToggleFocus}
+            onToggleWeek={onToggleWeek}
           />
         ))}
         {!items.length && <div className="task-table-empty"><Check /><span>{empty}</span></div>}
@@ -791,6 +820,7 @@ const LIST_DRAG_TYPE = "application/x-burner-list-id";
 function CollectionsView({
   items, allItems, lists, visibility, onOpen, onSaveItem, onCreateList, onSaveList,
   onDeleteList, onReorderLists, onMergeInto, onUnlinkItem, onDisbandGroup, onDeleteItem, onSaveVisibility, onBulkSave,
+  focusedIds, weekCommittedIds, onToggleFocus, onToggleWeek,
 }: {
   items: BoardItem[];
   allItems: BoardItem[];
@@ -808,6 +838,11 @@ function CollectionsView({
   onDeleteItem: (id: string) => void;
   onSaveVisibility: (changes: Partial<HomeVisibility>) => void;
   onBulkSave: (ids: string[], changes: EditableChanges) => Promise<{ applied: number; failed: number }>;
+  /** Phase 3 slice 2 (quick-actions follow-up): see TaskRow's doc comment. */
+  focusedIds?: Set<string>;
+  weekCommittedIds?: Set<string>;
+  onToggleFocus?: (id: string, focused: boolean) => void;
+  onToggleWeek?: (id: string, committed: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -937,7 +972,9 @@ function CollectionsView({
               showPriority={showPriority} onOpen={onOpen} onSave={onSaveItem}
               onMergeInto={onMergeInto} onUnlinkItem={onUnlinkItem} onDisbandGroup={onDisbandGroup} onDelete={onDeleteItem}
               selectable={isSelecting} selected={selectedIds.has(item.id)} onToggleSelect={toggleSelect}
-              mergeCandidates={rows.filter(candidate => candidate.id !== item.id)} />)}
+              mergeCandidates={rows.filter(candidate => candidate.id !== item.id)}
+              isFocused={focusedIds?.has(item.id)} isThisWeek={weekCommittedIds?.has(item.id)}
+              onToggleFocus={onToggleFocus} onToggleWeek={onToggleWeek} />)}
             {!rows.length && <div className="subtable-empty">Drop a task here or choose this list from a task’s Move to list menu.</div>}
           </div>
         </>}
@@ -1593,6 +1630,20 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     }
   };
 
+  /** One toggle for the Home-page row buttons - commits or withdraws depending on the requested
+   * next state, so TaskRow doesn't need to know which of the two commands applies. */
+  const toggleWeekCommitment = async (itemId: string, committed: boolean) => {
+    if (committed) await commitToWeek(itemId); else await withdrawFromWeek(itemId);
+  };
+
+  // Row-level quick actions (Home page only - see TaskRow's doc comment) need fast, per-item
+  // lookups rather than re-scanning the arrays on every row render.
+  const focusedIds = useMemo(() => new Set(data?.focus?.map((entry) => entry.itemId)), [data?.focus]);
+  const weekCommittedIds = useMemo(
+    () => new Set(data?.weekProgress?.commitments.filter((commitment) => !commitment.withdrawnAt).map((commitment) => commitment.itemId)),
+    [data?.weekProgress],
+  );
+
   const applyItemUpdates = (updated: BoardItem[]) => {
     setData((current) => current ? {
       ...current,
@@ -1762,7 +1813,8 @@ export default function BoardApp({ displayName }: { displayName: string }) {
           {!data.lists.some(list => list.rule === "inbox") && filtered.some(item => !item.collection && item.itemType !== "Event") && (
             <TaskTable title="Unfiled tasks" note="These tasks have no list. Move them into a list, or set any list’s Tasks shown setting to Unfiled tasks."
               items={filtered.filter(item => !item.collection && item.itemType !== "Event")} icon={Inbox} empty="No unfiled tasks"
-              collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} onBulkSave={bulkSave} />
+              collections={data.collections} onOpen={item => setSelectedId(item.id)} onSave={(id, changes) => void saveItem(id, changes)} onDelete={(id) => void deleteItem(id)} onBulkSave={bulkSave}
+              focusedIds={focusedIds} weekCommittedIds={weekCommittedIds} onToggleFocus={(id, focused) => void toggleFocus(id, focused)} onToggleWeek={(id, committed) => void toggleWeekCommitment(id, committed)} />
           )}
           <CollectionsView
             items={filtered.filter(item => item.itemType !== "Event")}
@@ -1781,6 +1833,10 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onDisbandGroup={(id) => void disbandGroup(id)}
             onDeleteItem={(id) => void deleteItem(id)}
             onBulkSave={bulkSave}
+            focusedIds={focusedIds}
+            weekCommittedIds={weekCommittedIds}
+            onToggleFocus={(id, focused) => void toggleFocus(id, focused)}
+            onToggleWeek={(id, committed) => void toggleWeekCommitment(id, committed)}
           />
           {!widgetTop && <UpcomingWidget items={openItems} position="bottom" onOpen={(item) => setSelectedId(item.id)} onMove={() => setWidgetTop(true)} />}
         </section>
