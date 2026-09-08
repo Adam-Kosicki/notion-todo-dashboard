@@ -457,7 +457,13 @@ function TaskRow({ item, collections, completed = false, showPriority = true, gr
           <span><i className={`source-dot ${sourceClass(item.source)}`} />{item.collection || shortRelation(item.area) || shortRelation(item.project) || item.itemType}</span>
         </button>
         <span className={date?.includes("overdue") ? "dashboard-due overdue" : "dashboard-due"}>{date || "—"}</span>
-        <span className="heat-score" title={`Combined urgency ${Math.round(attentionHeat(item))}`}><i />{attention}</span>
+        {/* Adam's feedback: this tooltip used to describe attentionHeat() ("Combined urgency"),
+         * a DIFFERENT number (priority folded in) than the one actually displayed here
+         * (effectiveAttention, via `attention` above) - fixed to describe the real displayed
+         * value and spell out why it's unrelated to Importance (staleness/last-interaction,
+         * imported from Notion; this app never computes it locally - a brand-new task reads 0
+         * regardless of its priority until Notion recomputes and a later sync pulls that in). */}
+        <span className="heat-score" title={`Attention ${attention} - staleness/last-interaction, imported from Notion. Separate from Importance (${item.priority ?? "unrated"}) - a new task starts at 0 regardless of priority.`}><i />{attention}</span>
         {showPriority && usesPriority(item.itemType) ? (
           // Adam's feedback: this used to also render a compact <PriorityControl> slider here,
           // duplicating the one in QuickEditor below (visible on the same hover/expand) - one
