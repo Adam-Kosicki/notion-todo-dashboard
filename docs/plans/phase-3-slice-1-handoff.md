@@ -438,5 +438,9 @@ unchanged. No new risk was introduced by this round's fix beyond what's already 
 
 Push `e578dd5` to `origin/claude-dev`, then send `e578dd5d0346dcc81e33d056b065b2138d43aeec` (or
 the range `7060176^..e578dd5` to cover all three remediation rounds) to Astra for re-review.
-**Phase 3 slice 2 (Focus/weekly-progress UI, roadmap section 8) has not been started** - no
-slice-2 files exist, no `app/board-app.tsx` wiring has begun - pending that re-review's outcome.
+
+**Superseded**: Phase 3 slice 2 (Focus/weekly-progress UI), the Today/Month/Year period
+extension, and the resulting completion batch have all since been implemented. This handoff's
+own content above (round 1-3 remediation evidence) remains accurate historical review evidence -
+only this final "next action" paragraph is stale. For current status and the next unblocked
+action, see `docs/plans/phase-3-completion-handoff.md`.

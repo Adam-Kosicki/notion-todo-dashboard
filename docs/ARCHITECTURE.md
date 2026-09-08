@@ -34,11 +34,20 @@ cut it and link instead.
   (Home's due-soon widget), plus the urgency/grouping helpers described below. `BoardApp` itself
   owns all client state (no external state library) and talks to the server exclusively through
   `boardRequest()`, a thin fetch wrapper around the one API route.
-- **`app/api/board/route.ts`** — the single API route. `GET` returns the full `BoardPayload`.
-  `POST` dispatches on a `body.action` string (`create`, `update`, `delete_item`, `list_create`,
-  `list_update`, `list_delete`, `list_reorder`, `merge_items`, `unlink_item`, `disband_group`,
-  `connect`, `disconnect`, `sync_notion`, `set_visibility`) rather than exposing REST endpoints
-  per resource — one route, one dispatch table, one auth check (`requireOwnerId()`).
+- **`app/api/board/route.ts`** — the main API route. `GET` returns the full `BoardPayload` plus
+  (additively) the Focus/weekly/period-progress bundle and the owner's planning timezone - see
+  "Phase 1 & 3: the command/query layer" below. `POST` dispatches on a `body.action` string
+  (`create`, `update`, `delete_item`, `list_create`, `list_update`, `list_delete`, `list_reorder`,
+  `merge_items`, `unlink_item`, `disband_group`, `connect`, `disconnect`, `sync_notion`,
+  `set_visibility`) for legacy item/list/Notion operations, OR a versioned command envelope
+  (`{apiVersion:1, requestId, action, payload}`) for `focus.*`/`week.*`/`period.*`/`settings.*` -
+  two dispatch shapes in one route, not two competing write paths (the legacy actions haven't been
+  migrated onto the envelope yet; see below for why).
+- **`app/api/board/weeks/route.ts`** — GET-only sibling route: the bounded, owner-scoped
+  prior-weeks read path (Phase 3 completion batch). No query param returns a summary list of
+  every planning week the owner has touched; `?weekId=<id>` returns one week's full progress
+  (live or frozen). Read-only — mutating a selected week still goes through the main route's
+  versioned `week.*` commands.
 - **`app/organize-mode.tsx`** — the one-at-a-time triage flow (`OrganizeMode`), wired into
   `BoardApp` as the "Organize" tab. Uses `lib/organizing.ts`'s suggestion engine.
 - **`app/layout.tsx`** — root HTML shell and metadata only.
@@ -62,7 +71,17 @@ cut it and link instead.
   an `app_meta` marker row so they run exactly once per owner.
 - **`lib/board-types.ts`** — shared types: `BoardItem`, `BoardList`, `BoardPayload`,
   `EditableList`, `EditableChanges`, `HomeVisibility`, plus the `ITEM_TYPES` and `LIST_TYPES`
-  constant tables.
+  constant tables. `BoardPayload`'s Phase 3 fields (`focus`, `weekProgress`, `todayProgress`,
+  `monthProgress`, `yearProgress`, `planningTimezone`) are type-only re-exports from
+  `lib/server/queries.ts`/`repository.ts` (erased at build time) so client components have one
+  place to import board-shaped types from without pulling server code into the client bundle.
+- **`lib/domain/contracts.ts`, `lib/domain/progress.ts`** — the Phase 1/3 domain layer: `contracts.ts`
+  holds the versioned command envelope, per-command Zod schemas (`COMMAND_SCHEMAS`), error
+  codes/statuses, and tunable `LIMITS`; `progress.ts` is the pure, DB-free statistics engine
+  (`computePeriodStats`, calendar-boundary helpers) - see "Phase 1 & 3: the command/query layer"
+  below for both.
+- **`lib/server/{repository,commands,queries,identity}.ts`** — the Phase 1/3 D1 access layer,
+  parallel to (not yet replacing) `board-store.ts`. See the dedicated section below.
 - **`lib/list-behavior.ts`** — pure, server- and client-shared functions: `belongsToList()`
   (list membership), `listMoveChanges()` (what changes when an item is dropped into a list),
   `compareListItems()` (list sort), `reorderedListIds()` (drag-to-reorder math). No I/O, easy to
@@ -117,13 +136,89 @@ cut it and link instead.
   returns one `BoardPayload`. The client's `BoardApp` fetches this once on mount and then patches
   its local copy optimistically as actions succeed.
 
+## Phase 1 & 3: the command/query layer
+
+`docs/plans/burner-board-roadmap.md`'s Phase 1 introduced a second, deliberately parallel D1
+access layer alongside `board-store.ts` - not a replacement (yet). It exists so new,
+Notion-independent functionality (Focus, weekly/period commitments, and now a persisted timezone
+setting) can be built with real transactional guarantees and tested against a synthetic SQLite
+harness, without needing every legacy item/list write path migrated first.
+
+- **`lib/server/repository.ts`** — raw D1 SQL and statement builders. Takes a `Database`
+  interface (its own small `prepare/bind/first/run/all` + `batch` shape) as a parameter rather
+  than importing `cloudflare:workers` directly - a real `D1Database` satisfies it structurally,
+  and `tests/helpers/d1.mjs`'s `asD1()` wraps Node's built-in `node:sqlite` to satisfy it too,
+  which is what lets `tests/commands.test.mjs`, `tests/focus-week-commands.test.mjs`,
+  `tests/period-commands.test.mjs`, and `tests/phase-3-completion.test.mjs` exercise real SQL
+  transactions without Miniflare or a Workers runtime.
+- **`lib/server/commands.ts`** — `applyCommand(db, ownerId, envelope)`, the single mutation entry
+  point for the versioned envelope. Validates against `contracts.ts`'s per-action Zod schema,
+  enforces idempotency via `command_receipts` (same `requestId` + same payload replays the stored
+  result; same `requestId` + different payload is a `CONFLICT`), dispatches to a handler, and
+  persists an activity event + receipt + board-revision bump. Two dispatch shapes inside it:
+  - `items.*`/`lists.*` go through the older, non-atomic `HANDLERS` map (mutation, then a
+    separate revision bump/event/receipt as distinct D1 round trips) and stay gated behind
+    `requiresD1Primary()` - they're Notion-synced legacy data, unreached by the real owner until
+    the Phase 4 cutover gate is satisfied.
+  - `focus.*`/`week.*`/`period.*`/`settings.*` have no Notion equivalent at all (same category as
+    Groups), so they're exempt from that gate and work for the real owner today.
+    `week.*`/`period.*`/`focus.set` additionally go through the atomic `ATOMIC_HANDLERS` path
+    (`AtomicPlan` + `applyAtomicPlan`): the mutation, its activity event(s), its receipt, and the
+    board-revision bump all commit in **one** `db.batch()` call, with a database-enforced guard
+    (an `EXISTS` subquery embedded in every statement, not a separate pre-read) that makes the
+    whole batch a no-op together if the precondition - board revision plus a command-specific
+    domain condition like "week must still be open" - no longer holds by the time it actually
+    runs. This exists because Astra's Phase 3 slice 1 review (commit `c02e352`, "Blocker B")
+    proved the older four-separate-round-trips shape leaves a permanently inconsistent state
+    under a crash or a concurrent `week.close` race. `settings.setPlanningTimezone` uses the
+    plain `HANDLERS` path instead - it's a preference change with no meaningful concurrent race
+    to guard against, same category as `items.create` in that regard.
+- **`lib/server/queries.ts`** — read-side assembly: `getBoardSnapshot` (Phase 1's minimal
+  current-state read), and the Phase 3 Focus/weekly/period progress reads
+  (`getFocusItems`, `getOrCreateCurrentPlanningWeek`/`Period`, `computeCurrentWeekStats`/
+  `computeCurrentPeriodStats`, `getWeekProgress`/`getPeriodProgress`), plus the Phase 3 completion
+  batch's additions: `getOwnerTimezone` (resolves the persisted preference, falling back to
+  `DEFAULT_PLANNING_TIMEZONE`) and `listRecentPlanningWeeks`/`getPlanningWeekProgressById` (the
+  prior-weeks history read path). `getOrCreateCurrentPlanningWeek`/`Period` are GET-triggered
+  writes - the same lazy-backfill precedent `board-store.ts`'s `getBoard()` already established,
+  idempotent and additive, not a domain mutation worth gating behind POST.
+- **`lib/domain/progress.ts`** — `computePeriodStats`, the pure statistics engine implementing
+  the roadmap's section 6 contract (originally `computeWeekStats`; renamed when it turned out to
+  already be period-shape-agnostic - it only ever consumed `{startDate, endDate, timezone}` plus
+  event history, nothing week-specific - so the Today/Month/Year extension reuses it as-is; a
+  `computeWeekStats` alias remains for callers that predate the rename). Replays an item's full
+  commit/withdraw and complete/reopen event history to compute on-time vs. late completion,
+  rather than trusting any single current-state column - a static snapshot column turned out to
+  be invalidatable by a later re-add (see the function's own doc comment for the exact scenario
+  Astra's review caught). Also holds the calendar-boundary helpers (`mondayStartOf`,
+  `dayStartOf`/`monthStartOf`/`yearStartOf` + their `*EndDate` counterparts,
+  `zonedMidnightUtc`) - all timezone-aware via `Intl.DateTimeFormat`, never fixed-hour-count
+  approximations, so DST transitions and variable month/year lengths are handled correctly.
+
+### Schema additions (Phase 1 & 3, additive - `db/schema.ts`)
+
+Beyond `items`/`lists`/`integrations`/`appMeta`: `boardState` (owner-level revision counter +
+`legacy_notion`/`d1_primary` storage mode), `commandReceipts` (idempotency), `activityEvents`
+(append-only audit log - not a general event-sourcing store; current-state tables remain
+authoritative), `focusItems`, `planningWeeks`/`weekCommitments` (Monday-start weeks; a
+commitment's `withdrawn_at`/`withdrawal_reason` are set in place, never deleted, since the
+denominator must include withdrawals), and `planningPeriods`/`periodCommitments` (the generic
+Today/Month/Year counterpart - one table pair with a `period_type` discriminator column, rather
+than three near-duplicate tables, since the stats math never needed anything week-specific).
+**No migration was needed for the Phase 3 completion batch's timezone setting** - it reuses the
+pre-existing `app_meta` key/value table (see "`app_meta` key-value reuse" below) with a new key,
+`planning_timezone`.
+
 ## Key patterns
 
 ### `app_meta` key-value reuse to avoid schema migrations
 `app_meta` (`owner_id`, `key`, `value` — see `db/schema.ts`) is a generic per-owner JSON blob
-store. Two things live there today: per-list preferences, keyed `list_preferences:<listId>`
-(JSON: `pinned`, `rule`, `itemSort`, `showPurchases`), and global settings, keyed
-`home_visibility` (JSON: `goals`, `purchases`). Writes use
+store. Three things live there today: per-list preferences, keyed `list_preferences:<listId>`
+(JSON: `pinned`, `rule`, `itemSort`, `showPurchases`), global settings, keyed `home_visibility`
+(JSON: `goals`, `purchases`), and (Phase 3 completion batch) the persisted planning-timezone
+preference, keyed `planning_timezone` (`lib/server/repository.ts`'s `getOwnerPlanningTimezone`/
+`setOwnerPlanningTimezoneStmt`) — a plain string value, not JSON, since nothing else ever
+partially updates that one key. Writes to the first two use
 `INSERT ... ON CONFLICT DO UPDATE SET value = json_patch(app_meta.value, excluded.value)`
 (`updateList`, `updateVisibility`, `reorderLists` in `lib/server/board-store.ts`) — SQLite's
 `json_patch()` merges the new object into the stored one field-by-field, and **a JSON `null` in
@@ -263,3 +358,20 @@ was checked.
 a full build first, then `node --test tests/*.test.mjs` (see `package.json`). There is currently
 no test coverage for `lib/server/board-store.ts` or `lib/list-behavior.ts` beyond what
 `tests/organizing.test.mjs` exercises indirectly.
+
+The Phase 1/3 command/query layer (above) has its own test suite, all real-SQLite-backed (via
+`tests/helpers/d1.mjs`'s `asD1()`), not mocked: `tests/commands.test.mjs`/`identity.test.mjs`
+(Phase 1 items/lists), `tests/focus-week-commands.test.mjs`/`progress.test.mjs` (Focus/weekly),
+`tests/period-commands.test.mjs` (Today/Month/Year), `tests/migrations.test.mjs` (schema
+upgrades on disposable storage), and `tests/phase-3-completion.test.mjs` (the completion batch's
+timezone setting and prior-weeks history read path). `tests/board-workflows.test.mjs` and
+`tests/weekly-progress-workflows.test.mjs` cover real component interaction (render, click,
+select, assert) via jsdom + `@testing-library/react`, layered on the Vite `ssrLoadModule`
+pipeline `tests/ui-components.test.mjs` established for loading real `.tsx` files — see
+`tests/helpers/dom.mjs`'s `installDom()`, which must run before importing
+`@testing-library/react`/`react-dom` in a new such file.
+
+Two pre-existing, unrelated failures persist across every Phase 3 batch to date (not caused by
+any of it): `tests/rendered-html.test.mjs`'s "renders development preview metadata" (Node ESM
+loader rejects a `cloudflare:` URL scheme) and `tests/ui-components.test.mjs`'s "emits the
+catalog's animation and scrolling utilities" (a scrollbar-width CSS regex mismatch).

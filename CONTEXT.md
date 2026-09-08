@@ -101,6 +101,46 @@ label ("Reference / someday"). These are three separate concepts that happen to 
 don't assume they mean the same thing in a given context. See
 [docs/adr/0003](docs/adr/0003-deferred-questions-for-astra.md) topic 1.
 
+## Planning and progress (Phase 3)
+
+**Focus**:
+A user-selected set of current priorities, independent of List membership, importance, and Last
+Interaction. Optionally carries a review-until date. Distinct from a Weekly commitment (below):
+Focus is "what matters right now," a commitment is "what's selected for a specific time period" -
+an item can be one, both, or neither, and toggling one never changes the other.
+_Avoid_: Priority (the separate 0-10 score), Active (recently-touched, a different signal).
+
+**Weekly commitment**:
+An Item explicitly selected for a specific Monday-start planning week. This is the population
+used in weekly completion statistics (completed/total, shown as e.g. "12/20"). Withdrawing a
+commitment keeps it in the denominator - it does not shrink the ratio or get deleted, only marked
+withdrawn (optionally with a reason - see Deferral, below).
+_Avoid_: Due date, scheduled date (those are per-Item date fields; a commitment is a separate
+selection, not implied by a date).
+
+**Planning period**:
+The generic Today / This month / This year counterpart to a Weekly commitment - the same
+selection/statistics mechanism, evaluated over a calendar day, month, or year instead of a week.
+An Item can be independently selected for any combination of Today/This week/This month/This
+year at once; selecting or withdrawing from one never changes another's membership or completion
+credit. Unlike a week, a period does not need an explicit close step before its stats are
+trustworthy.
+_Avoid_: Time horizon (used in early planning discussion for the same concept - "planning period"
+is the term that shipped).
+
+**Deferral**:
+An explicit, optionally-reasoned withdrawal from a Weekly commitment or Planning period -
+presented as "Deferred: \<reason\>" rather than a bare "Withdrawn" when a reason was given. Purely
+a presentation label: a deferral does not shrink the statistics denominator, reschedule the Item,
+or change any date field.
+_Avoid_: Snooze, reschedule (those imply a date change; a deferral only records why something was
+withdrawn from this period's selection).
+
+**Planning timezone**:
+A persisted per-owner setting (suggested initial value: America/Chicago) used to compute the
+calendar boundaries of newly created weeks and periods. Changing it never reinterprets a week or
+period that already exists - each one keeps the timezone it was created with, permanently.
+
 ## Scoring
 
 **Priority score**:

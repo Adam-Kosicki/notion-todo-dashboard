@@ -193,12 +193,29 @@ Do not add a general event-sourcing framework. Current-state tables serve normal
 
 ### Weekly statistics contract
 
-- User timezone defaults to the existing known preference or asks during setup; suggested initial value for this owner is America/Chicago, never infer it permanently from the server timezone. Week starts Monday unless the owner changes it.
-- Show completed / total tasks selected for that week, with added/withdrawn/deferred counts visible separately. Define the displayed denominator as all commitments added to the week, including withdrawals; do not improve the percentage by withdrawing unfinished work.
+- User timezone defaults to the existing known preference or asks during setup; suggested initial value for this owner is America/Chicago, never infer it permanently from the server timezone. Week starts Monday unless the owner changes it. **Implemented** (Phase 3 completion batch): a persisted per-owner timezone setting (`settings.setPlanningTimezone`) replaces the previously-hardcoded suggested default; changing it affects only newly created weeks/periods going forward and never reinterprets an already-created row's recorded timezone.
+- Show completed / total tasks selected for that week, with added/withdrawn/deferred counts visible separately. Define the displayed denominator as all commitments added to the week, including withdrawals; do not improve the percentage by withdrawing unfinished work. **Implemented**: withdrawal now accepts an optional reason, shown as an explicit “Deferred: ...” label distinct from a bare withdrawal - presentation only, the denominator/percentage math is unchanged.
 - A task contributes once per week, even if shown in several views. Goals and reference records are excluded from the task ratio; show goal milestones separately.
 - Count completion events inside the week after commitment selection. Reopen within the same week reverses its current completion contribution. Completion outside the week is shown as late completion, not rewritten as on-time success.
-- Closing a week freezes its report. Later edits do not rewrite historical reports. Explicit corrections must be labeled and versioned.
+- Closing a week freezes its report. Later edits do not rewrite historical reports. Explicit corrections must be labeled and versioned. **Implemented**: a bounded, owner-scoped prior-weeks selector (`GET /api/board/weeks`) keeps every past week - closed or still open past its natural rollover - reachable and closeable from the UI, not only the current week.
 - Zero commitments shows “No tasks planned”, not 0% or 100%. Unknown imported completion dates do not create fabricated historical weekly results.
+
+### Approved extension: Today/Month/Year planning periods
+
+Adam approved generalizing the weekly commitment mechanism to three additional selectable
+planning horizons - Today, This month, This year - alongside the week (Phase 3 completion batch,
+building on the already-implemented weekly mechanism above). In product terms: an item can be
+independently selected for any combination of Today/This week/This month/This year through one
+“Plan” control per row; adding or withdrawing from one horizon never changes another horizon's
+membership or completion credit, matching the weekly contract's own independence rule. Each
+horizon uses the same completed/total ratio, added/withdrawn/deferred presentation, and
+timezone-aware calendar boundaries (calendar day/month/year, not fixed hour counts) as the weekly
+contract. Unlike a week, a Today/Month/Year period does not require an explicit close step before
+its statistics are trustworthy - the underlying calculation already bounds on-time credit against
+that period's own end instant regardless of open/closed status, so it reports correctly whether
+or not it has ever been explicitly closed. Focus (user-selected current priorities) remains
+independent of all four horizons, per the domain model's existing Focus/Weekly-commitment
+distinction.
 
 ## 7. API and mutation contracts
 
@@ -551,7 +568,12 @@ Checked during planning on 2026-09-07. Recheck changing account features before 
 - Private original notes and CSV: read with user authorization; aggregate CSV counts spot-checked by Astra.
 - Product questions: answered; architecture direction approved, including the final requirement for a persistent in-app setup guide and interchangeable Claude/ChatGPT clients.
 - This roadmap: written for implementation handoff. No application code changed, dependencies installed, real data modified, provider connections made, schedules enabled, or tests/builds run during planning.
-- Implementation phases 0–8: **not started**.
+- Implementation phases 0–8, as of the Phase 3 completion batch (this update):
+  - **Phase 0** (baseline/isolation/recovery/identity): done - see `docs/operations/data-recovery.md` and the migration runner (`scripts/migrate-board.mjs`).
+  - **Phase 1** (D1 authority foundation, shared commands): done for its own scope - `lib/domain/contracts.ts`, `lib/server/{commands,queries,repository,identity}.ts` exist and are tested (`tests/commands.test.mjs`, `tests/identity.test.mjs`). The real owner's storage mode remains `legacy_notion`; the phase-4 cutover gate has not been exercised, by design.
+  - **Phase 2** (organization/History/mixed Lists): done - History view, bulk actions, simplified editor, Needs-review queue, and the Guide/AI-setup placeholder are implemented (see `docs/ARCHITECTURE.md`).
+  - **Phase 3** (Focus and trustworthy weekly progress), including the approved Today/Month/Year extension above: **substantially implemented across several batches; this update records implementation status, not a declaration of formal acceptance** (that determination is Astra's, per the batch-review workflow in `AGENTS.md`). Focus, weekly commitments, the Today/Month/Year extension, atomic command/receipt/event handling, the persisted owner timezone setting, and the bounded prior-weeks history read path are all implemented and covered by `node --test tests/*.test.mjs` (`tests/focus-week-commands.test.mjs`, `tests/period-commands.test.mjs`, `tests/progress.test.mjs`, `tests/phase-3-completion.test.mjs`, `tests/weekly-progress-workflows.test.mjs`). See `docs/plans/phase-3-completion-handoff.md` for the latest batch's exact evidence and remaining limitations (no live-browser pass this batch; sample mode intentionally still states its limitation rather than simulating planning interactions).
+  - **Phases 4–8**: not started. Phase 4's real-data cutover gate and OAuth/endpoint selection remain open per section 11's gates table.
 
 If the planning session ends or usage resets, this file is the durable handoff. Resume from actual repository state and this progress section rather than reconstructing decisions from memory.
 
