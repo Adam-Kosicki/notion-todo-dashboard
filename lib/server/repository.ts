@@ -314,11 +314,21 @@ export function withdrawWeekCommitmentStmt(db: Database, ownerId: string, weekId
     .bind(now, reason, ownerId, weekId, itemId, ownerId, weekId, ...guard.params);
 }
 
-export type ActivityEventRow = { entity_id: string; event_type: string; timestamp: string };
+/**
+ * Astra review (round 2 re-review): `after_json` is included specifically so callers can recover
+ * `weekId` for week.commit/week.withdraw rows (see commands.ts's weekClosePlan) - entity_id is the
+ * ITEM id for these event types, not the week, since the same item can be committed to multiple
+ * different planning weeks independently (week_commitments' primary key is
+ * (owner_id, week_id, item_id)). Querying by item id alone is therefore not enough to reconstruct
+ * one specific week's own commit/withdraw history.
+ */
+export type ActivityEventRow = { entity_id: string; event_type: string; timestamp: string; after_json: string | null };
 
 /** Used by weekClose to reconstruct each committed item's complete/reopen AND commit/withdraw
  * history for computeWeekStats (pass the relevant eventTypes for each; entity_id is the item ID
- * for both categories, so one call covers both - see commands.ts's weekClosePlan). */
+ * for both categories, so one call covers both - see commands.ts's weekClosePlan). Returns every
+ * matching event regardless of which week a week.commit/week.withdraw row belongs to - the caller
+ * must filter commit/withdraw rows to the week being closed using `after_json`'s `weekId`. */
 export async function listActivityEventsForItems(
   db: Database,
   ownerId: string,
@@ -330,7 +340,7 @@ export async function listActivityEventsForItems(
   const typePlaceholders = eventTypes.map(() => "?").join(",");
   const result = await db
     .prepare(
-      `SELECT entity_id, event_type, timestamp FROM activity_events
+      `SELECT entity_id, event_type, timestamp, after_json FROM activity_events
        WHERE owner_id = ? AND entity_id IN (${itemPlaceholders}) AND event_type IN (${typePlaceholders})
        ORDER BY timestamp ASC`,
     )

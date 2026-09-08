@@ -128,6 +128,37 @@ test("week.commit supports add -> withdraw -> re-add (roadmap Phase 3 acceptance
   assert.equal(closeResult.result.totalCommitments, 1, "still exactly one commitment row - re-add is an upsert, not a second row");
 });
 
+// --- Astra review (round 2 re-review) regression case ---
+
+test("Astra P1: commit/withdraw history is scoped per week - withdrawing an item from a DIFFERENT week must not affect this week's report", async () => {
+  const { db, ownerId } = await legacyOwnerWithItem();
+  await createPlanningWeek(db, ownerId, "zz-week-scope-1", "2026-09-07", "America/Chicago");
+  await createPlanningWeek(db, ownerId, "zz-week-scope-2", "2026-09-14", "America/Chicago");
+
+  // Select the same task for this week AND next week.
+  await applyCommand(db, ownerId, envelope("week.commit", { weekId: "zz-week-scope-1", itemId: "zz-item-1" }));
+  await applyCommand(db, ownerId, envelope("week.commit", { weekId: "zz-week-scope-2", itemId: "zz-item-1" }));
+
+  // Withdraw it from NEXT week only - this week's commitment stays active.
+  const withdrawn = await applyCommand(db, ownerId, envelope("week.withdraw", { weekId: "zz-week-scope-2", itemId: "zz-item-1" }));
+  assert.equal(withdrawn.ok, true);
+
+  // Complete it (this week's window).
+  await db.prepare("UPDATE items SET status = 'Done', completed_at = CURRENT_TIMESTAMP WHERE owner_id = ? AND id = ?").bind(ownerId, "zz-item-1").run();
+  await db
+    .prepare(
+      "INSERT INTO activity_events (id, owner_id, entity_id, actor_kind, event_type, request_id, before_json, after_json, timestamp) VALUES ('zz-evt-scope', ?, 'zz-item-1', 'owner', 'items.complete', 'zz-req', NULL, NULL, ?)",
+    )
+    .bind(ownerId, new Date().toISOString())
+    .run();
+
+  // Closing THIS week must show it completed - the other week's withdrawal must not leak in.
+  const closeResult = await applyCommand(db, ownerId, envelope("week.close", { weekId: "zz-week-scope-1" }));
+  assert.equal(closeResult.ok, true);
+  assert.equal(closeResult.result.completed, 1, "withdrawing from a different week must not flip this week's commitment to inactive");
+  assert.equal(closeResult.result.completionRatioLabel, "1/1");
+});
+
 test("Blocker B: week.commit is rejected (not silently accepted) while a week is mid-close", async () => {
   const { db, ownerId } = await legacyOwnerWithItem();
   await createPlanningWeek(db, ownerId, "zz-week-race", "2026-09-07", "America/Chicago");

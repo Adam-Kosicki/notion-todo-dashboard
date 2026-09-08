@@ -477,7 +477,11 @@ async function weekWithdrawPlan(db: Database, ownerId: string, input: WeekWithdr
       result: { weekId: input.weekId, itemId: input.itemId },
       changedItemIds: [input.itemId],
       changedListIds: [],
-      activity: [{ entityId: input.itemId, eventType: "week.withdraw", before: null, after: { reason: input.reason ?? null } }],
+      // Astra review (round 2 re-review): weekId must be recorded here too, just like
+      // week.commit's after payload already does - the same item can be committed to multiple
+      // different planning weeks independently, so weekClose needs to tell which week each
+      // commit/withdraw event actually belongs to (see listActivityEventsForItems's doc comment).
+      activity: [{ entityId: input.itemId, eventType: "week.withdraw", before: null, after: { weekId: input.weekId, reason: input.reason ?? null } }],
       onZeroChanges: () => new CommandError("CONFLICT", "This week is closed, or the commitment was already withdrawn by another request."),
     },
   };
@@ -530,9 +534,20 @@ async function weekClosePlan(db: Database, ownerId: string, input: WeekCloseInpu
   const statusEvents = allEvents.filter((event): event is typeof event & { event_type: "items.complete" | "items.reopen" } =>
     event.event_type === "items.complete" || event.event_type === "items.reopen",
   );
-  const commitmentEvents = allEvents.filter((event): event is typeof event & { event_type: "week.commit" | "week.withdraw" } =>
-    event.event_type === "week.commit" || event.event_type === "week.withdraw",
-  );
+  // Astra review (round 2 re-review, P1): the same item can be committed to multiple different
+  // planning weeks independently (week_commitments' primary key is
+  // (owner_id, week_id, item_id)), so listActivityEventsForItems' item-scoped query returns
+  // commit/withdraw history for EVERY week that item has ever touched, not just this one. Without
+  // filtering by weekId, a withdrawal from a *different* week could incorrectly flip this week's
+  // isActive state (reproduced: commit to week 1 and week 2, withdraw from week 2 only, complete
+  // within week 1 - the frozen report showed 0/1 instead of 1/1). Every week.commit/week.withdraw
+  // event records its weekId in after_json (see weekCommitPlan/weekWithdrawPlan) - keep only the
+  // ones that belong to the week actually being closed.
+  const commitmentEvents = allEvents.filter((event): event is typeof event & { event_type: "week.commit" | "week.withdraw" } => {
+    if (event.event_type !== "week.commit" && event.event_type !== "week.withdraw") return false;
+    const after = event.after_json ? (JSON.parse(event.after_json) as { weekId?: string }) : null;
+    return after?.weekId === input.weekId;
+  });
 
   const stats = computeWeekStats({
     week: { startDate: week!.start_date, endDate: weekEndDate(week!.start_date), timezone: week!.timezone },
