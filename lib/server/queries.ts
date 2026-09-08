@@ -3,16 +3,20 @@
 // belong to phases 2-4 as their UI/MCP consumers land. Same runtime-agnostic Database
 // dependency-injection pattern as repository.ts/commands.ts - see repository.ts's file comment.
 import { computePeriodStats, mondayStartOf, periodEndDate, periodStartOf, weekEndDate, type PeriodStats, type PeriodType } from "@/lib/domain/progress";
+import { LIMITS } from "@/lib/domain/contracts";
 import {
   createPlanningPeriod,
   createPlanningWeek,
   findItemRow,
   findPlanningPeriodByTypeAndStart,
+  findPlanningWeek,
   findPlanningWeekByStartDate,
   getBoardState,
+  getOwnerPlanningTimezone,
   listActivityEventsForItems,
   listFocusItems,
   listPeriodCommitments,
+  listPlanningWeeks,
   listWeekCommitments,
   type Database,
   type FocusItemRow,
@@ -20,6 +24,7 @@ import {
   type ListRow,
   type PlanningPeriodRow,
   type PlanningWeekRow,
+  type PlanningWeekSummary,
 } from "@/lib/server/repository";
 
 export type BoardSnapshot = {
@@ -52,6 +57,20 @@ export async function getBoardSnapshot(db: Database, ownerId: string): Promise<B
  * not guessed here. Centralized so it's one place to change when that preference ships.
  */
 export const DEFAULT_PLANNING_TIMEZONE = "America/Chicago";
+
+/**
+ * Phase 3 completion: the owner's persisted timezone preference (lib/server/commands.ts's
+ * settings.setPlanningTimezone), falling back to DEFAULT_PLANNING_TIMEZONE until the owner ever
+ * sets one - never the other way around. Callers use this ONLY to pick the timezone for a *new*
+ * planning_weeks/planning_periods row (see getOrCreateCurrentPlanningWeek/Period below); an
+ * existing row already recorded its own timezone at creation time and keeps it regardless of
+ * later preference changes - the roadmap's "never reinterpret already-frozen reports" plus the
+ * completion handoff's "retain the recorded timezone of existing periods."
+ */
+export async function getOwnerTimezone(db: Database, ownerId: string): Promise<string> {
+  const stored = await getOwnerPlanningTimezone(db, ownerId);
+  return stored ?? DEFAULT_PLANNING_TIMEZONE;
+}
 
 /**
  * Finds this week's (Monday-start, DEFAULT_PLANNING_TIMEZONE) planning_weeks row, creating it if
@@ -152,6 +171,27 @@ export async function getWeekProgress(db: Database, ownerId: string, week: Plann
     };
   });
   return { weekId: week.id, startDate: week.start_date, timezone: week.timezone, status: week.status, stats, commitments };
+}
+
+/**
+ * Phase 3 completion: a bounded, owner-scoped, most-recent-first summary list of every planning
+ * week the owner has touched (open or closed) - the missing read side of "a prior week's frozen
+ * report survives in planning_weeks but drops out of the browser after rollover" (completion
+ * handoff). Summaries only (id/date/status, no stats) - a selector's worth of data, not a report;
+ * callers fetch one week's full getWeekProgress only after the owner picks it.
+ */
+export async function listRecentPlanningWeeks(db: Database, ownerId: string, limit: number = LIMITS.maxPlanningWeekHistory): Promise<PlanningWeekSummary[]> {
+  return listPlanningWeeks(db, ownerId, limit);
+}
+
+/** Looks up an arbitrary owner-scoped week by ID (current or historical) and returns its full
+ * progress - the read half of letting the owner inspect/close a prior week, not just the current
+ * one. Returns null for an unknown or not-owned ID, same not-found-not-forbidden shape the
+ * roadmap's API contract uses elsewhere. */
+export async function getPlanningWeekProgressById(db: Database, ownerId: string, weekId: string): Promise<WeekProgress | null> {
+  const week = await findPlanningWeek(db, ownerId, weekId);
+  if (!week) return null;
+  return getWeekProgress(db, ownerId, week);
 }
 
 // --- Phase 3 extension: Today/Month/Year periods -------------------------------------------

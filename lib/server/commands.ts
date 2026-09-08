@@ -40,6 +40,7 @@ import {
   type ListsUpdateInput,
   type PeriodCommitInput,
   type PeriodWithdrawInput,
+  type SettingsSetPlanningTimezoneInput,
   type WeekCloseInput,
   type WeekCommitInput,
   type WeekWithdrawInput,
@@ -61,10 +62,12 @@ import {
   findWeekCommitment,
   getBoardState,
   getReceipt,
+  getOwnerPlanningTimezone,
   removeFocusItemStmt,
   revisionGuard,
   saveReceipt,
   setFocusItemStmt,
+  setOwnerPlanningTimezoneStmt,
   upsertPeriodCommitmentStmt,
   upsertWeekCommitmentStmt,
   withdrawPeriodCommitmentStmt,
@@ -329,6 +332,24 @@ async function listsDelete(db: Database, ownerId: string, input: ListsDeleteInpu
     changedItemIds: memberIds,
     changedListIds: [input.id],
     activity: [{ entityId: input.id, eventType: "lists.delete", before, after: null }],
+  };
+}
+
+// --- Phase 3 completion: persisted owner planning-timezone preference ------------------------
+// A plain preference change, not a domain transition with a race condition worth an AtomicPlan's
+// guard (contrast focus.*/week.*/period.* below) - same category as items.create in that regard,
+// so it goes through the existing non-atomic HANDLERS/finishViaBumpAndReceipt path. Still gets its
+// own activity event (before/after timezone) so a later "why did this week's boundary look
+// different" question has an audit trail - see contracts.ts's SettingsSetPlanningTimezoneSchema
+// comment for why this is a command and not a bare board-store.ts-style preference toggle.
+async function settingsSetPlanningTimezone(db: Database, ownerId: string, input: SettingsSetPlanningTimezoneInput): Promise<HandlerOutcome<{ timezone: string }>> {
+  const before = await getOwnerPlanningTimezone(db, ownerId);
+  await setOwnerPlanningTimezoneStmt(db, ownerId, input.timezone).run();
+  return {
+    result: { timezone: input.timezone },
+    changedItemIds: [],
+    changedListIds: [],
+    activity: [{ entityId: ownerId, eventType: "settings.timezone_changed", before: { timezone: before }, after: { timezone: input.timezone } }],
   };
 }
 
@@ -765,6 +786,7 @@ const HANDLERS: Partial<Record<CommandAction, (db: Database, ownerId: string, in
   "lists.create": listsCreate,
   "lists.update": listsUpdate,
   "lists.delete": listsDelete,
+  "settings.setPlanningTimezone": settingsSetPlanningTimezone,
 };
 
 /** Shared tail for the non-atomic items./lists. path and for focus./week.'s true no-op outcomes

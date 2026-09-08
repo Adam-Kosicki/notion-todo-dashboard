@@ -47,7 +47,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster } from "@/components/ui/sonner";
-import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type HomeVisibility, type RelationOption } from "@/lib/board-types";
+import { ITEM_TYPES, LIST_TYPES, listTypeDefaults, type BoardItem, type BoardList, type BoardPayload, type EditableChanges, type EditableList, type HomeVisibility, type PlanningWeekSummary, type RelationOption } from "@/lib/board-types";
 
 import OrganizeMode from "./organize-mode";
 import "./organize.css";
@@ -55,6 +55,7 @@ import { HistoryView } from "@/components/board/history-view";
 import { BulkActionBar } from "@/components/board/bulk-actions";
 import { FocusView } from "@/components/board/focus-view";
 import { PeriodProgress } from "@/components/board/period-progress";
+import { PlanningTimezone } from "@/components/board/planning-timezone";
 import { WeeklyProgress } from "@/components/board/weekly-progress";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
@@ -118,6 +119,7 @@ async function commandRequest(action: string, payload: unknown) {
     todayProgress?: BoardPayload["todayProgress"];
     monthProgress?: BoardPayload["monthProgress"];
     yearProgress?: BoardPayload["yearProgress"];
+    planningTimezone?: BoardPayload["planningTimezone"];
     error?: string;
   };
   if (!response.ok) throw new Error(body.error || "That action failed.");
@@ -127,6 +129,7 @@ async function commandRequest(action: string, payload: unknown) {
     todayProgress: BoardPayload["todayProgress"];
     monthProgress: BoardPayload["monthProgress"];
     yearProgress: BoardPayload["yearProgress"];
+    planningTimezone: BoardPayload["planningTimezone"];
   };
 }
 
@@ -1460,6 +1463,15 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   const [demo, setDemo] = useState(false);
   const inboxRef = useRef<HTMLDivElement>(null);
 
+  // Phase 3 completion: prior-weeks history selector state (docs/plans/phase-3-completion-batch.md
+  // - "a prior week's frozen report survives in planning_weeks but drops out of the browser after
+  // rollover"). `selectedWeekId` null means "viewing the current week" (data.weekProgress);
+  // otherwise `historicalWeek` holds that week's fetched progress. `pastWeeks` stays undefined
+  // until the owner opens the history selector at least once (lazy, not fetched on every load).
+  const [pastWeeks, setPastWeeks] = useState<PlanningWeekSummary[] | undefined>(undefined);
+  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
+  const [historicalWeek, setHistoricalWeek] = useState<BoardPayload["weekProgress"] | null>(null);
+
   const load = async () => {
     try {
       setError(null);
@@ -1760,9 +1772,103 @@ export default function BoardApp({ displayName }: { displayName: string }) {
   };
 
   /** One toggle for the Home-page row buttons - commits or withdraws depending on the requested
-   * next state, so TaskRow doesn't need to know which of the two commands applies. */
+   * next state, so TaskRow doesn't need to know which of the two commands applies. Always targets
+   * the CURRENT week (never whatever prior week the Focus tab's history selector has picked -
+   * see loadPastWeeks/selectWeek below - since a Home-page row has no notion of "selected week"). */
   const toggleWeekCommitment = async (itemId: string, committed: boolean) => {
     if (committed) await commitToWeek(itemId); else await withdrawFromWeek(itemId);
+  };
+
+  // Phase 3 completion: the prior-weeks history selector (docs/plans/phase-3-completion-batch.md
+  // - "a prior week's frozen report survives in planning_weeks but drops out of the browser after
+  // rollover"). Deliberately separate from commitToWeek/withdrawFromWeek/closeWeek above (which
+  // always target the current week for Home-row quick actions) rather than generalizing those -
+  // smaller diff, and Home-row behavior stays untouched.
+  const loadPastWeeks = async () => {
+    if (demo) return;
+    try {
+      const response = await fetch("/api/board/weeks");
+      const body = await response.json() as { weeks?: PlanningWeekSummary[]; error?: string };
+      if (!response.ok) throw new Error(body.error || "Could not load prior weeks.");
+      setPastWeeks(body.weeks ?? []);
+    } catch (loadError) {
+      toast.error(loadError instanceof Error ? loadError.message : "Could not load prior weeks.");
+    }
+  };
+
+  /** null returns the WeeklyProgress display to the current week (already in data.weekProgress);
+   * any other id fetches that week's full progress via the new app/api/board/weeks GET route
+   * (lib/server/queries.ts's getPlanningWeekProgressById). */
+  const selectWeek = async (weekId: string | null) => {
+    if (!weekId) { setSelectedWeekId(null); setHistoricalWeek(null); return; }
+    try {
+      const response = await fetch(`/api/board/weeks?weekId=${encodeURIComponent(weekId)}`);
+      const body = await response.json() as { week?: BoardPayload["weekProgress"]; error?: string };
+      if (!response.ok || !body.week) throw new Error(body.error || "Could not load that week.");
+      setHistoricalWeek(body.week);
+      setSelectedWeekId(weekId);
+    } catch (selectError) {
+      toast.error(selectError instanceof Error ? selectError.message : "Could not load that week.");
+    }
+  };
+
+  const refreshHistoricalWeek = async (weekId: string) => {
+    try {
+      const response = await fetch(`/api/board/weeks?weekId=${encodeURIComponent(weekId)}`);
+      const body = await response.json() as { week?: BoardPayload["weekProgress"] };
+      if (response.ok && body.week) setHistoricalWeek(body.week);
+    } catch {
+      // Best-effort refresh only - the command itself already succeeded either way.
+    }
+  };
+
+  const commitToHistoricalWeek = async (weekId: string, itemId: string) => {
+    try {
+      const result = await commandRequest("week.commit", { weekId, itemId });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+      await refreshHistoricalWeek(weekId);
+    } catch (commitError) {
+      toast.error(commitError instanceof Error ? commitError.message : "Could not add that to this week.");
+    }
+  };
+
+  const withdrawFromHistoricalWeek = async (weekId: string, itemId: string, reason?: string) => {
+    try {
+      const result = await commandRequest("week.withdraw", { weekId, itemId, reason: reason ?? null });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+      await refreshHistoricalWeek(weekId);
+    } catch (withdrawError) {
+      toast.error(withdrawError instanceof Error ? withdrawError.message : "Could not withdraw that from this week.");
+    }
+  };
+
+  const closeHistoricalWeek = async (weekId: string) => {
+    try {
+      const result = await commandRequest("week.close", { weekId });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+      await refreshHistoricalWeek(weekId);
+      toast.success("Week closed. The report is now frozen.");
+    } catch (closeError) {
+      toast.error(closeError instanceof Error ? closeError.message : "Could not close this week.");
+    }
+  };
+
+  const changePlanningTimezone = async (timezone: string) => {
+    try {
+      const result = await commandRequest("settings.setPlanningTimezone", { timezone });
+      setData((current) => current ? {
+        ...current,
+        focus: result.focus,
+        weekProgress: result.weekProgress,
+        todayProgress: result.todayProgress,
+        monthProgress: result.monthProgress,
+        yearProgress: result.yearProgress,
+        planningTimezone: result.planningTimezone,
+      } : current);
+      toast.success("Planning timezone updated. New weeks and periods will use it.");
+    } catch (timezoneError) {
+      toast.error(timezoneError instanceof Error ? timezoneError.message : "Could not update the planning timezone.");
+    }
   };
 
   // Phase 3 extension (docs/adr/local/time-horizon-quick-actions.md): Today/Month/Year mirror
@@ -2077,9 +2183,20 @@ export default function BoardApp({ displayName }: { displayName: string }) {
         <section className="dashboard-wrap single-table-wrap flex flex-col gap-4">
           {data.weekProgress && data.focus ? (
             <>
+              {data.planningTimezone && <PlanningTimezone timezone={data.planningTimezone} onChange={changePlanningTimezone} />}
               <FocusView focusItems={data.focus} items={openItems} onToggleFocus={toggleFocus} />
               {data.todayProgress && <PeriodProgress title="Today" periodProgress={data.todayProgress} items={openItems} onCommit={(id) => commitToPeriod("today", id)} onWithdraw={(id) => withdrawFromPeriod("today", id)} />}
-              <WeeklyProgress weekProgress={data.weekProgress} items={openItems} onCommit={commitToWeek} onWithdraw={withdrawFromWeek} onClose={closeWeek} />
+              <WeeklyProgress
+                weekProgress={selectedWeekId && historicalWeek ? historicalWeek : data.weekProgress}
+                items={openItems}
+                onCommit={selectedWeekId ? (id) => commitToHistoricalWeek(selectedWeekId, id) : commitToWeek}
+                onWithdraw={selectedWeekId ? (id, reason) => withdrawFromHistoricalWeek(selectedWeekId, id, reason) : withdrawFromWeek}
+                onClose={selectedWeekId ? () => closeHistoricalWeek(selectedWeekId) : closeWeek}
+                pastWeeks={pastWeeks}
+                selectedWeekId={selectedWeekId}
+                onSelectWeek={(weekId) => void selectWeek(weekId)}
+                onLoadPastWeeks={() => void loadPastWeeks()}
+              />
               {data.monthProgress && <PeriodProgress title="This month" periodProgress={data.monthProgress} items={openItems} onCommit={(id) => commitToPeriod("month", id)} onWithdraw={(id) => withdrawFromPeriod("month", id)} />}
               {data.yearProgress && <PeriodProgress title="This year" periodProgress={data.yearProgress} items={openItems} onCommit={(id) => commitToPeriod("year", id)} onWithdraw={(id) => withdrawFromPeriod("year", id)} />}
             </>

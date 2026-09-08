@@ -19,7 +19,7 @@ import {
 } from "@/lib/server/board-store";
 import { applyCommand } from "@/lib/server/commands";
 import { ERROR_STATUS, isKnownCommand, type CommandEnvelope } from "@/lib/domain/contracts";
-import { getFocusItems, getOrCreateCurrentPlanningPeriod, getOrCreateCurrentPlanningWeek, getPeriodProgress, getWeekProgress } from "@/lib/server/queries";
+import { getFocusItems, getOrCreateCurrentPlanningPeriod, getOrCreateCurrentPlanningWeek, getOwnerTimezone, getPeriodProgress, getWeekProgress } from "@/lib/server/queries";
 import type { EditableChanges, EditableList, HomeVisibility } from "@/lib/board-types";
 
 export const dynamic = "force-dynamic";
@@ -34,21 +34,24 @@ function errorResponse(error: unknown) {
 }
 
 /**
- * Phase 3 slice 2 (+ the Today/Month/Year extension): focus/weekly/period-progress data,
- * additive alongside the legacy `getBoard()` payload - never replacing it (roadmap: "GET
- * /api/board returns the current compatible payload plus ... capability flags").
- * `getOrCreateCurrentPlanningWeek`/`getOrCreateCurrentPlanningPeriod` are GET-triggered writes,
- * same precedent as `getBoard()`'s own lazy backfills (idempotent, additive, not a domain
- * mutation worth gating on POST).
+ * Phase 3 slice 2 (+ the Today/Month/Year extension, + the completion batch's persisted
+ * timezone): focus/weekly/period-progress data, additive alongside the legacy `getBoard()`
+ * payload - never replacing it (roadmap: "GET /api/board returns the current compatible payload
+ * plus ... capability flags"). `getOrCreateCurrentPlanningWeek`/`getOrCreateCurrentPlanningPeriod`
+ * are GET-triggered writes, same precedent as `getBoard()`'s own lazy backfills (idempotent,
+ * additive, not a domain mutation worth gating on POST). The resolved owner timezone is used only
+ * for creating NEW week/period rows here - an existing row keeps whatever timezone it was
+ * created with (see queries.ts's getOwnerTimezone doc comment).
  */
 async function getFocusAndWeekProgress(ownerId: string) {
   const db = getCommandDb();
+  const timezone = await getOwnerTimezone(db, ownerId);
   const [focus, week, today, month, year] = await Promise.all([
     getFocusItems(db, ownerId),
-    getOrCreateCurrentPlanningWeek(db, ownerId),
-    getOrCreateCurrentPlanningPeriod(db, ownerId, "day"),
-    getOrCreateCurrentPlanningPeriod(db, ownerId, "month"),
-    getOrCreateCurrentPlanningPeriod(db, ownerId, "year"),
+    getOrCreateCurrentPlanningWeek(db, ownerId, timezone),
+    getOrCreateCurrentPlanningPeriod(db, ownerId, "day", timezone),
+    getOrCreateCurrentPlanningPeriod(db, ownerId, "month", timezone),
+    getOrCreateCurrentPlanningPeriod(db, ownerId, "year", timezone),
   ]);
   const [weekProgress, todayProgress, monthProgress, yearProgress] = await Promise.all([
     getWeekProgress(db, ownerId, week),
@@ -56,7 +59,7 @@ async function getFocusAndWeekProgress(ownerId: string) {
     getPeriodProgress(db, ownerId, month),
     getPeriodProgress(db, ownerId, year),
   ]);
-  return { focus, weekProgress, todayProgress, monthProgress, yearProgress };
+  return { focus, weekProgress, todayProgress, monthProgress, yearProgress, planningTimezone: timezone };
 }
 
 export async function GET() {
@@ -86,18 +89,18 @@ export async function POST(request: Request) {
       orderedIds?: string[];
       pin?: { id: string; pinned: boolean };
       visibility?: Partial<HomeVisibility>;
-      // Phase 3 slice 2 (+ Today/Month/Year extension): the new versioned command envelope
-      // (roadmap section 7), used so far only for focus.*/week.*/period.* - the commands exempt
-      // from the d1_primary gate (see lib/server/commands.ts's requiresD1Primary). items./lists.
-      // stay on the legacy actions above until the phase 4 cutover; this isn't a second,
-      // competing write path for those.
+      // Phase 3 slice 2 (+ Today/Month/Year extension + the completion batch's settings.*): the
+      // new versioned command envelope (roadmap section 7), used so far only for
+      // focus.*/week.*/period.*/settings.* - the commands exempt from the d1_primary gate (see
+      // lib/server/commands.ts's requiresD1Primary). items./lists. stay on the legacy actions
+      // above until the phase 4 cutover; this isn't a second, competing write path for those.
       apiVersion?: 1;
       requestId?: string;
       expectedBoardRevision?: number;
       payload?: unknown;
     };
 
-    if (body.apiVersion === 1 && typeof body.requestId === "string" && typeof body.action === "string" && isKnownCommand(body.action) && (body.action.startsWith("focus.") || body.action.startsWith("week.") || body.action.startsWith("period."))) {
+    if (body.apiVersion === 1 && typeof body.requestId === "string" && typeof body.action === "string" && isKnownCommand(body.action) && (body.action.startsWith("focus.") || body.action.startsWith("week.") || body.action.startsWith("period.") || body.action.startsWith("settings."))) {
       const envelope: CommandEnvelope = {
         apiVersion: 1,
         requestId: body.requestId,

@@ -173,6 +173,32 @@ export const PeriodWithdrawSchema = z.object({
 });
 export type PeriodWithdrawInput = z.infer<typeof PeriodWithdrawSchema>;
 
+// --- Phase 3 completion: persisted owner planning-timezone preference ---
+// The roadmap's weekly statistics contract requires "the known preference or a setup choice,"
+// not a permanently hardcoded server default (see lib/server/queries.ts's
+// DEFAULT_PLANNING_TIMEZONE, still the suggested INITIAL value, never inferred as final). A
+// command (not a bare board-store.ts-style preference toggle like set_visibility) so the change
+// gets an activity-event audit trail - "make timezone changes' effect clear" per the completion
+// handoff. No Notion equivalent, so - like focus.*/week.*/period.* - never gated behind
+// d1_primary (see commands.ts's requiresD1Primary).
+export const SettingsSetPlanningTimezoneSchema = z.object({
+  timezone: z
+    .string()
+    .min(1)
+    .max(100)
+    .refine((value) => {
+      try {
+        // Throws RangeError for anything that isn't a real IANA zone name - the standard way to
+        // validate one without shipping/maintaining a separate zone-name list.
+        new Intl.DateTimeFormat(undefined, { timeZone: value });
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Not a recognized IANA timezone name."),
+});
+export type SettingsSetPlanningTimezoneInput = z.infer<typeof SettingsSetPlanningTimezoneSchema>;
+
 export const COMMAND_SCHEMAS = {
   "items.create": ItemsCreateSchema,
   "items.update": ItemsUpdateSchema,
@@ -191,6 +217,7 @@ export const COMMAND_SCHEMAS = {
   "week.close": WeekCloseSchema,
   "period.commit": PeriodCommitSchema,
   "period.withdraw": PeriodWithdrawSchema,
+  "settings.setPlanningTimezone": SettingsSetPlanningTimezoneSchema,
 } as const;
 export type CommandAction = keyof typeof COMMAND_SCHEMAS;
 
@@ -204,4 +231,8 @@ export const LIMITS = {
   maxProposalOperations: 25,
   maxQueryPageSize: 100,
   maxProposalBodyBytes: 64 * 1024,
+  // Phase 3 completion: bound on the prior-weeks history selector (lib/server/repository.ts's
+  // listPlanningWeeks) - about a year of weekly history, plenty for reviewing recent rollovers
+  // without becoming a general analytics UI.
+  maxPlanningWeekHistory: 52,
 } as const;

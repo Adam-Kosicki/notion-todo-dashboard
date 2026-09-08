@@ -176,6 +176,25 @@ export async function findListByName(db: Database, ownerId: string, name: string
   return db.prepare("SELECT owner_id, id, name FROM lists WHERE owner_id = ? AND name = ?").bind(ownerId, name).first<ListRow>();
 }
 
+// --- Phase 3 completion: persisted owner planning-timezone preference ---
+// Reuses the pre-existing app_meta key/value table (board-store.ts's getVisibility/
+// updateVisibility follow the same shape for home_visibility) rather than a new column/table -
+// one owner-scoped scalar preference doesn't need its own migration. Stored as a plain string,
+// not JSON - nothing else ever partially updates this key, so there's no json_patch merge need.
+
+const PLANNING_TIMEZONE_KEY = "planning_timezone";
+
+export async function getOwnerPlanningTimezone(db: Database, ownerId: string): Promise<string | null> {
+  const row = await db.prepare("SELECT value FROM app_meta WHERE owner_id = ? AND key = ?").bind(ownerId, PLANNING_TIMEZONE_KEY).first<{ value: string }>();
+  return row ? row.value : null;
+}
+
+export function setOwnerPlanningTimezoneStmt(db: Database, ownerId: string, timezone: string): PreparedStatement {
+  return db
+    .prepare("INSERT INTO app_meta (owner_id, key, value) VALUES (?, ?, ?) ON CONFLICT(owner_id, key) DO UPDATE SET value = excluded.value")
+    .bind(ownerId, PLANNING_TIMEZONE_KEY, timezone);
+}
+
 // --- Phase 3: Focus and weekly commitments (not gated by storage_mode - see commands.ts) ---
 
 export type FocusItemRow = { owner_id: string; item_id: string; selected_at: string; review_until: string | null };
@@ -249,6 +268,24 @@ export function finalizeClosedPlanningWeekStmt(db: Database, ownerId: string, id
   return db
     .prepare(`UPDATE planning_weeks SET status = 'closed', report_json = ? WHERE owner_id = ? AND id = ? AND status = 'closing' AND ${guard.sql}`)
     .bind(reportJson, ownerId, id, ...guard.params);
+}
+
+export type PlanningWeekSummary = { id: string; start_date: string; timezone: string; status: string };
+
+/**
+ * Phase 3 completion: a prior week's frozen report survives in `planning_weeks` after rollover,
+ * but GET /api/board only ever resolved the CURRENT week - see queries.ts's
+ * getOrCreateCurrentPlanningWeek. This is the read side of the fix: a bounded, owner-scoped,
+ * most-recent-first list of every week (open or closed) an owner has touched, for a history
+ * selector - never the full unbounded table (the roadmap's "bounded... not a general analytics
+ * UI" instruction; see contracts.ts's LIMITS.maxPlanningWeekHistory).
+ */
+export async function listPlanningWeeks(db: Database, ownerId: string, limit: number): Promise<PlanningWeekSummary[]> {
+  const result = await db
+    .prepare("SELECT id, start_date, timezone, status FROM planning_weeks WHERE owner_id = ? ORDER BY start_date DESC LIMIT ?")
+    .bind(ownerId, limit)
+    .all<PlanningWeekSummary>();
+  return result.results;
 }
 
 export type WeekCommitmentRow = {
