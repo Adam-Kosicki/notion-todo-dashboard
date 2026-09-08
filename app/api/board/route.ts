@@ -7,6 +7,7 @@ import {
   disbandGroup,
   disconnectProvider,
   getBoard,
+  getCommandDb,
   mergeItems,
   reorderLists,
   requireOwnerId,
@@ -16,6 +17,9 @@ import {
   updateList,
   updateVisibility,
 } from "@/lib/server/board-store";
+import { applyCommand } from "@/lib/server/commands";
+import { ERROR_STATUS, isKnownCommand, type CommandEnvelope } from "@/lib/domain/contracts";
+import { getFocusItems, getOrCreateCurrentPlanningWeek, getWeekProgress } from "@/lib/server/queries";
 import type { EditableChanges, EditableList, HomeVisibility } from "@/lib/board-types";
 
 export const dynamic = "force-dynamic";
@@ -29,10 +33,25 @@ function errorResponse(error: unknown) {
   );
 }
 
+/**
+ * Phase 3 slice 2: focus/weekly-progress data, additive alongside the legacy `getBoard()`
+ * payload - never replacing it (roadmap: "GET /api/board returns the current compatible payload
+ * plus ... capability flags"). `getOrCreateCurrentPlanningWeek` is a GET-triggered write, same
+ * precedent as `getBoard()`'s own lazy backfills (idempotent, additive, not a domain mutation
+ * worth gating on POST).
+ */
+async function getFocusAndWeekProgress(ownerId: string) {
+  const db = getCommandDb();
+  const [focus, week] = await Promise.all([getFocusItems(db, ownerId), getOrCreateCurrentPlanningWeek(db, ownerId)]);
+  const weekProgress = await getWeekProgress(db, ownerId, week);
+  return { focus, weekProgress };
+}
+
 export async function GET() {
   try {
     const ownerId = await requireOwnerId();
-    return Response.json(await getBoard(ownerId));
+    const [board, extra] = await Promise.all([getBoard(ownerId), getFocusAndWeekProgress(ownerId)]);
+    return Response.json({ ...board, ...extra });
   } catch (error) {
     return errorResponse(error);
   }
@@ -55,7 +74,31 @@ export async function POST(request: Request) {
       orderedIds?: string[];
       pin?: { id: string; pinned: boolean };
       visibility?: Partial<HomeVisibility>;
+      // Phase 3 slice 2: the new versioned command envelope (roadmap section 7), used so far only
+      // for focus.*/week.* - the commands exempt from the d1_primary gate (see
+      // lib/server/commands.ts's requiresD1Primary). items./lists. stay on the legacy actions
+      // above until the phase 4 cutover; this isn't a second, competing write path for those.
+      apiVersion?: 1;
+      requestId?: string;
+      expectedBoardRevision?: number;
+      payload?: unknown;
     };
+
+    if (body.apiVersion === 1 && typeof body.requestId === "string" && typeof body.action === "string" && isKnownCommand(body.action) && (body.action.startsWith("focus.") || body.action.startsWith("week."))) {
+      const envelope: CommandEnvelope = {
+        apiVersion: 1,
+        requestId: body.requestId,
+        expectedBoardRevision: body.expectedBoardRevision,
+        action: body.action,
+        payload: body.payload,
+      };
+      const result = await applyCommand(getCommandDb(), ownerId, envelope);
+      if (!result.ok) {
+        return Response.json({ error: result.error.message, command: result }, { status: ERROR_STATUS[result.error.code] });
+      }
+      const extra = await getFocusAndWeekProgress(ownerId);
+      return Response.json({ command: result, ...extra });
+    }
 
     if (body.action === "create") {
       return Response.json({ item: await createItem(ownerId, body.title || "") }, { status: 201 });

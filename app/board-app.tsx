@@ -29,6 +29,7 @@ import {
   Settings2,
   ShoppingCart,
   Sparkles,
+  Star,
   Target,
   Trash2,
   Trophy,
@@ -52,11 +53,13 @@ import OrganizeMode from "./organize-mode";
 import "./organize.css";
 import { HistoryView } from "@/components/board/history-view";
 import { BulkActionBar } from "@/components/board/bulk-actions";
+import { FocusView } from "@/components/board/focus-view";
+import { WeeklyProgress } from "@/components/board/weekly-progress";
 import { needsOrganization } from "@/lib/organizing";
 import { sampleBoard } from "@/lib/sample-board";
 import { belongsToList, compareListItems, LIST_RULES, LIST_SORTS, listMoveChanges, plannedDate, reorderedListIds } from "@/lib/list-behavior";
 
-type BoardMode = "home" | "organize" | "calendar" | "goals" | "reminders" | "completed";
+type BoardMode = "home" | "organize" | "calendar" | "goals" | "reminders" | "focus" | "completed";
 
 const STATUSES = ["Not started", "In progress", "Done", "Archived"];
 const ENERGIES = ["High focus", "Medium", "Low / admin"];
@@ -96,6 +99,24 @@ async function boardRequest(body?: unknown) {
   };
   if (!response.ok) throw new Error(payload.error || "The board could not finish that change.");
   return payload;
+}
+
+/** Phase 3 slice 2: the new versioned command envelope (roadmap section 7), used for the
+ * focus and week commands - see app/api/board/route.ts's POST handler. Returns the refreshed
+ * focus/weekProgress bundle so callers can update state without a full board reload. */
+async function commandRequest(action: string, payload: unknown) {
+  const response = await fetch("/api/board", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiVersion: 1, requestId: crypto.randomUUID(), action, payload }),
+  });
+  const body = await response.json() as {
+    focus?: BoardPayload["focus"];
+    weekProgress?: BoardPayload["weekProgress"];
+    error?: string;
+  };
+  if (!response.ok) throw new Error(body.error || "That action failed.");
+  return body as { focus: BoardPayload["focus"]; weekProgress: BoardPayload["weekProgress"] };
 }
 
 function shortRelation(value: string | null) {
@@ -1528,6 +1549,50 @@ export default function BoardApp({ displayName }: { displayName: string }) {
     }
   };
 
+  // Phase 3 slice 2: focus.*/week.* go through commandRequest (the new versioned envelope), not
+  // boardRequest - full board reload isn't needed since the response already carries the
+  // refreshed focus/weekProgress bundle.
+  const toggleFocus = async (itemId: string, focused: boolean) => {
+    if (demo) { toast.info("Exit the sample board to use Focus."); return; }
+    try {
+      const result = await commandRequest("focus.set", { itemId, focused });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+    } catch (focusError) {
+      toast.error(focusError instanceof Error ? focusError.message : "Focus could not be updated.");
+    }
+  };
+
+  const commitToWeek = async (itemId: string) => {
+    if (demo || !data?.weekProgress) { toast.info("Exit the sample board to use weekly progress."); return; }
+    try {
+      const result = await commandRequest("week.commit", { weekId: data.weekProgress.weekId, itemId });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+    } catch (commitError) {
+      toast.error(commitError instanceof Error ? commitError.message : "Could not add that to this week.");
+    }
+  };
+
+  const withdrawFromWeek = async (itemId: string, reason?: string) => {
+    if (!data?.weekProgress) return;
+    try {
+      const result = await commandRequest("week.withdraw", { weekId: data.weekProgress.weekId, itemId, reason: reason ?? null });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+    } catch (withdrawError) {
+      toast.error(withdrawError instanceof Error ? withdrawError.message : "Could not withdraw that from this week.");
+    }
+  };
+
+  const closeWeek = async () => {
+    if (!data?.weekProgress) return;
+    try {
+      const result = await commandRequest("week.close", { weekId: data.weekProgress.weekId });
+      setData((current) => current ? { ...current, focus: result.focus, weekProgress: result.weekProgress } : current);
+      toast.success("Week closed. The report is now frozen.");
+    } catch (closeError) {
+      toast.error(closeError instanceof Error ? closeError.message : "Could not close this week.");
+    }
+  };
+
   const applyItemUpdates = (updated: BoardItem[]) => {
     setData((current) => current ? {
       ...current,
@@ -1646,6 +1711,7 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             <TabsTrigger value="calendar"><CalendarDays />Calendar</TabsTrigger>
             <TabsTrigger value="goals"><Target />Goals</TabsTrigger>
             <TabsTrigger value="reminders"><BellRing />Reminders</TabsTrigger>
+            <TabsTrigger value="focus"><Star />Focus</TabsTrigger>
             <TabsTrigger value="completed"><Trophy />History</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -1659,10 +1725,12 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             ? "Every long-term goal, in one place, regardless of any list's visibility setting."
             : mode === "reminders"
             ? "Recurring items live here. Notification delivery can connect to Apple Reminders or Google Calendar later."
+            : mode === "focus"
+            ? "Current priorities and this week's selected work, independent of lists and dates."
             : "Completed and archived work, searchable by list and date. Archived items stay recoverable."}</p>
       </section>
 
-      {mode !== "organize" && <section className="filterbar">
+      {mode !== "organize" && mode !== "focus" && <section className="filterbar">
         <div className="search-box"><Search /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks, lists, notes..." /></div>
         <Select value={view} onValueChange={setView}>
           <SelectTrigger className="filter-select"><SelectValue /></SelectTrigger>
@@ -1772,6 +1840,17 @@ export default function BoardApp({ displayName }: { displayName: string }) {
             onDelete={(id) => void deleteItem(id)}
             title="Reminders"
           />
+        </section>
+      ) : mode === "focus" ? (
+        <section className="dashboard-wrap single-table-wrap flex flex-col gap-4">
+          {data.weekProgress && data.focus ? (
+            <>
+              <WeeklyProgress weekProgress={data.weekProgress} items={openItems} onCommit={commitToWeek} onWithdraw={withdrawFromWeek} onClose={closeWeek} />
+              <FocusView focusItems={data.focus} items={openItems} onToggleFocus={toggleFocus} />
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">Focus and weekly progress aren&apos;t available in the sample board.</p>
+          )}
         </section>
       ) : (
         <section className="dashboard-wrap history-wrap">

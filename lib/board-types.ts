@@ -79,6 +79,12 @@ export type EditableList = Partial<Pick<BoardList, "name" | "type" | "showPriori
 
 export type HomeVisibility = { goals: boolean; purchases: boolean };
 
+// Phase 3 slice 2: type-only imports from the server modules that own these shapes
+// (lib/server/queries.ts, lib/domain/progress.ts) - erased at build time, so importing them here
+// doesn't pull server code into the client bundle. Kept as re-exports so board-app.tsx and the
+// new focus/weekly-progress components have one place to import board-shaped types from.
+export type { FocusItemDisplay, WeekProgress, WeekCommitmentDisplay } from "@/lib/server/queries";
+
 export type BoardPayload = {
   items: BoardItem[];
   connections: { notion: boolean; notionManaged: boolean };
@@ -87,6 +93,10 @@ export type BoardPayload = {
   lists: BoardList[];
   visibility: HomeVisibility;
   importedCount: number;
+  // Optional: getBoard() itself doesn't produce these (app/api/board/route.ts's GET handler
+  // merges them in separately from lib/server/queries.ts) - and sample/demo mode has neither.
+  focus?: import("@/lib/server/queries").FocusItemDisplay[];
+  weekProgress?: import("@/lib/server/queries").WeekProgress;
 };
 
 export type EditableChanges = Partial<Pick<BoardItem,

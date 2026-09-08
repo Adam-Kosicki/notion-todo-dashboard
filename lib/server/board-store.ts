@@ -54,6 +54,20 @@ function runtime(): RuntimeEnv {
   return env as unknown as RuntimeEnv;
 }
 
+/**
+ * Phase 3 slice 2: the raw D1 binding, typed as repository.ts's runtime-agnostic `Database`
+ * interface, for app/api/board/route.ts to pass into applyCommand/queries.ts for focus./week.
+ * commands and reads. Centralized here (the one file in this module graph that already imports
+ * `cloudflare:workers` - see repository.ts's file comment on why it deliberately doesn't) rather
+ * than duplicating the cast at each call site. The cast itself is needed because the real
+ * `D1Database` type requires a `.raw()` method on prepared statements that the narrower
+ * `Database`/`PreparedStatement` interface doesn't declare - both the real binding and the test
+ * harness already satisfy the narrower interface structurally.
+ */
+export function getCommandDb(): Database {
+  return runtime().DB as unknown as Database;
+}
+
 function managedNotionToken() {
   return runtime().NOTION_INTEGRATION_ACCESS_TOKEN?.trim() || null;
 }
@@ -933,11 +947,7 @@ export async function updateItem(ownerId: string, id: string, changes: EditableC
     : null;
 
   if (activityStmt) {
-    // repository.ts's Database/PreparedStatement is the minimal structural contract both the
-    // real D1 binding and the test harness satisfy (see repository.ts's file comment) - the real
-    // D1Database type additionally requires `.raw()` on prepared statements, which this narrower
-    // interface doesn't declare, hence the cast.
-    await (runtime().DB as unknown as Database).batch([updateStmt, activityStmt]);
+    await getCommandDb().batch([updateStmt, activityStmt]);
   } else {
     await updateStmt.run();
   }

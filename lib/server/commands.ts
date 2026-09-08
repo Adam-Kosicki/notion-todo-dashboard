@@ -43,7 +43,7 @@ import {
   type WeekWithdrawInput,
   isKnownCommand,
 } from "@/lib/domain/contracts";
-import { computeWeekStats, weekEndDate, type WeekStats } from "@/lib/domain/progress";
+import type { WeekStats } from "@/lib/domain/progress";
 import {
   appendActivityEvent,
   beginClosingPlanningWeek,
@@ -57,8 +57,6 @@ import {
   findWeekCommitment,
   getBoardState,
   getReceipt,
-  listActivityEventsForItems,
-  listWeekCommitments,
   removeFocusItemStmt,
   revisionGuard,
   saveReceipt,
@@ -69,6 +67,7 @@ import {
   type ItemRow,
   type PreparedStatement,
 } from "@/lib/server/repository";
+import { computeCurrentWeekStats } from "@/lib/server/queries";
 
 export { ERROR_STATUS };
 
@@ -519,46 +518,11 @@ async function weekClosePlan(db: Database, ownerId: string, input: WeekCloseInpu
     }
   }
 
-  const commitments = await listWeekCommitments(db, ownerId, input.weekId);
-  const itemIds = commitments.map((commitment) => commitment.item_id);
-  const itemRows = await Promise.all(itemIds.map((id) => findItemRow(db, ownerId, id)));
-  const itemsById: Record<string, { itemType: string }> = {};
-  itemRows.forEach((row, index) => {
-    if (row) itemsById[itemIds[index]] = { itemType: row.item_type };
-  });
-  // Astra review (remediation round, repository.ts:275): on-time credit is no longer decided from
-  // a single added_at snapshot column - see lib/domain/progress.ts's computeWeekStats, which
-  // replays the full week.commit/week.withdraw history alongside complete/reopen to know whether
-  // an item was actually active at the moment it was completed.
-  const allEvents = await listActivityEventsForItems(db, ownerId, itemIds, ["items.complete", "items.reopen", "week.commit", "week.withdraw"]);
-  const statusEvents = allEvents.filter((event): event is typeof event & { event_type: "items.complete" | "items.reopen" } =>
-    event.event_type === "items.complete" || event.event_type === "items.reopen",
-  );
-  // Astra review (round 2 re-review, P1): the same item can be committed to multiple different
-  // planning weeks independently (week_commitments' primary key is
-  // (owner_id, week_id, item_id)), so listActivityEventsForItems' item-scoped query returns
-  // commit/withdraw history for EVERY week that item has ever touched, not just this one. Without
-  // filtering by weekId, a withdrawal from a *different* week could incorrectly flip this week's
-  // isActive state (reproduced: commit to week 1 and week 2, withdraw from week 2 only, complete
-  // within week 1 - the frozen report showed 0/1 instead of 1/1). Every week.commit/week.withdraw
-  // event records its weekId in after_json (see weekCommitPlan/weekWithdrawPlan) - keep only the
-  // ones that belong to the week actually being closed.
-  const commitmentEvents = allEvents.filter((event): event is typeof event & { event_type: "week.commit" | "week.withdraw" } => {
-    if (event.event_type !== "week.commit" && event.event_type !== "week.withdraw") return false;
-    const after = event.after_json ? (JSON.parse(event.after_json) as { weekId?: string }) : null;
-    return after?.weekId === input.weekId;
-  });
-
-  const stats = computeWeekStats({
-    week: { startDate: week!.start_date, endDate: weekEndDate(week!.start_date), timezone: week!.timezone },
-    commitments: commitments.map((commitment) => ({
-      itemId: commitment.item_id,
-      withdrawnAt: commitment.withdrawn_at,
-    })),
-    itemsById,
-    events: statusEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
-    commitmentEvents: commitmentEvents.map((event) => ({ itemId: event.entity_id, eventType: event.event_type, timestamp: event.timestamp })),
-  });
+  // Astra review (remediation round, repository.ts:275; per-week scoping fixed in round 3, P1):
+  // shared with the live GET /api/board read path (lib/server/queries.ts's computeCurrentWeekStats)
+  // so weekClose's frozen snapshot and the UI's live display are always the exact same
+  // computation, one implementation, not two.
+  const stats = await computeCurrentWeekStats(db, ownerId, week!);
 
   // Astra P1#3: captured as late as practical, right before building the finalize batch, since
   // weekClose's read-compute step above can take a while - minimizing the window in which a
